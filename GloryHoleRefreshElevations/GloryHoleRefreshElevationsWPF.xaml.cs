@@ -1,174 +1,240 @@
-﻿using System.Linq;
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input;
 
 namespace GloryHoleRefreshElevations
 {
     public partial class GloryHoleRefreshElevationsWPF : Window
     {
+        private const string RebindWarning = "После перепривязки проверьте привязку к уровням.";
+        private GloryHoleRefreshElevationsSettings _settings;
+        private bool _isInitialized;
+
         public string RoundHolesPositionButtonName;
         public double RoundHolePositionIncrement;
-
         public string RoundHolesLocationButtonName;
         public double RoundHoleLocationIncrement;
-
         public string RefreshElevationsOptionButtonName;
-        GloryHoleRefreshElevationsSettings GloryHoleRefreshElevationsSettingsItem = null;
-        public GloryHoleRefreshElevationsWPF()
+
+        // These options apply only to this command invocation and never enter the updater settings.
+        public bool RebindToLevels { get; private set; }
+        public bool RebindToSelectedLevel { get; private set; }
+        public string SelectedRebindLevelUniqueId { get; private set; } = string.Empty;
+
+        public GloryHoleRefreshElevationsWPF() : this(Array.Empty<RebindLevel>())
         {
-            GloryHoleRefreshElevationsSettingsItem = GloryHoleRefreshElevationsSettings.GetSettings();
-            InitializeComponent();
-
-            if (GloryHoleRefreshElevationsSettingsItem != null)
-            {
-                if (GloryHoleRefreshElevationsSettingsItem.RefreshElevationsOptionButtonName == "rbt_AllProject")
-                {
-                    rbt_AllProject.IsChecked = true;
-                }
-                else
-                {
-                    rbt_SelectedItems.IsChecked = true;
-                }
-
-                if (GloryHoleRefreshElevationsSettingsItem.RoundHolesPositionButtonName == "radioButton_RoundHolesPositionYes")
-                {
-                    radioButton_RoundHolesPositionYes.IsChecked = true;
-                }
-                else
-                {
-                    radioButton_RoundHolesPositionNo.IsChecked = true;
-                }
-
-                if (GloryHoleRefreshElevationsSettingsItem.RoundHolePositionIncrementValue != null)
-                {
-                    textBox_RoundHolePositionIncrement.Text = GloryHoleRefreshElevationsSettingsItem.RoundHolePositionIncrementValue;
-                }
-                else
-                {
-                    textBox_RoundHolePositionIncrement.Text = "5";
-                }
-
-
-                if (GloryHoleRefreshElevationsSettingsItem.RoundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
-                {
-                    radioButton_RoundHolesLocationYes.IsChecked = true;
-                }
-                else
-                {
-                    radioButton_RoundHolesLocationNo.IsChecked = true;
-                }
-
-                if (!string.IsNullOrEmpty(GloryHoleRefreshElevationsSettingsItem.RoundHoleLocationIncrementValue))
-                {
-                    textBox_RoundHoleLocationIncrement.Text = GloryHoleRefreshElevationsSettingsItem.RoundHoleLocationIncrementValue;
-                }
-                else
-                {
-                    textBox_RoundHoleLocationIncrement.Text = "10";
-                }
-
-                checkBox_UpdaterOn.IsChecked = GloryHoleRefreshElevationsSettingsItem.UpdaterOn;
-            }
         }
+
+        internal GloryHoleRefreshElevationsWPF(IReadOnlyList<RebindLevel> levels)
+        {
+            _settings = GloryHoleRefreshElevationsSettings.GetSettings();
+            InitializeComponent();
+            MaxHeight = Math.Max(280, SystemParameters.WorkArea.Height);
+            MinHeight = Math.Min(MinHeight, MaxHeight);
+
+            comboBox_RebindLevel.ItemsSource = levels
+                .OrderBy(level => level.ProjectElevation)
+                .ThenBy(level => level.Name)
+                .ToList();
+
+            if (_settings != null)
+            {
+                rbt_SelectedItems.IsChecked = _settings.RefreshElevationsOptionButtonName == "rbt_SelectedItems";
+                rbt_AllProject.IsChecked = rbt_SelectedItems.IsChecked != true;
+                radioButton_RoundHolesPositionYes.IsChecked =
+                    _settings.RoundHolesPositionButtonName == "radioButton_RoundHolesPositionYes";
+                radioButton_RoundHolesPositionNo.IsChecked = radioButton_RoundHolesPositionYes.IsChecked != true;
+                textBox_RoundHolePositionIncrement.Text =
+                    string.IsNullOrWhiteSpace(_settings.RoundHolePositionIncrementValue)
+                        ? "5" : _settings.RoundHolePositionIncrementValue;
+
+                radioButton_RoundHolesLocationYes.IsChecked =
+                    _settings.RoundHolesLocationButtonName == "radioButton_RoundHolesLocationYes";
+                radioButton_RoundHolesLocationNo.IsChecked = radioButton_RoundHolesLocationYes.IsChecked != true;
+                textBox_RoundHoleLocationIncrement.Text =
+                    string.IsNullOrWhiteSpace(_settings.RoundHoleLocationIncrementValue)
+                        ? "5" : _settings.RoundHoleLocationIncrementValue;
+                checkBox_UpdaterOn.IsChecked = _settings.UpdaterOn;
+            }
+
+            _isInitialized = true;
+            UpdateRoundingControls();
+            UpdateRebindControls();
+        }
+
         private void btn_Ok_Click(object sender, RoutedEventArgs e)
         {
-            SaveSettings();
-            DialogResult = true;
-            Close();
+            if (TrySaveSettings())
+                DialogResult = true;
         }
+
         private void btn_Cancel_Click(object sender, RoutedEventArgs e)
         {
             DialogResult = false;
-            Close();
         }
-        private void GloryHoleRefreshElevationsWPF_KeyDown(object sender, KeyEventArgs e)
-        {
-            if (e.Key == Key.Enter || e.Key == Key.Space)
-            {
-                SaveSettings();
-                DialogResult = true;
-                Close();
-            }
 
-            else if (e.Key == Key.Escape)
-            {
-                DialogResult = false;
-                Close();
-            }
-        }
         private void radioButton_RoundHolesPosition_Checked(object sender, RoutedEventArgs e)
         {
-            RoundHolesPositionButtonName = (this.groupBox_RoundHolesPosition.Content as Grid)
-                .Children.OfType<RadioButton>()
-                .FirstOrDefault(rb => rb.IsChecked.Value == true)
-                .Name;
-            if (RoundHolesPositionButtonName == "radioButton_RoundHolesPositionYes")
-            {
-                if (label_RoundHolePosition != null)
-                {
-                    label_RoundHolePosition.IsEnabled = true;
-                    textBox_RoundHolePositionIncrement.IsEnabled = true;
-                    label_RoundHolePositionMM.IsEnabled = true;
-                }
-            }
-            else if (RoundHolesPositionButtonName == "radioButton_RoundHolesPositionNo")
-            {
-                if (label_RoundHolePosition != null)
-                {
-                    label_RoundHolePosition.IsEnabled = false;
-                    textBox_RoundHolePositionIncrement.IsEnabled = false;
-                    label_RoundHolePositionMM.IsEnabled = false;
-                }
-            }
+            if (_isInitialized)
+                UpdateRoundingControls();
         }
+
         private void radioButton_RoundHolesLocation_Checked(object sender, RoutedEventArgs e)
         {
-            RoundHolesLocationButtonName = (this.groupBox_RoundHolesLocation.Content as Grid)
-                .Children.OfType<RadioButton>()
-                .FirstOrDefault(rb => rb.IsChecked.Value == true)
-                .Name;
-
-            bool isEnabled = RoundHolesLocationButtonName == "radioButton_RoundHolesLocationYes";
-
-            if (label_RoundHoleLocation != null)
-            {
-                label_RoundHoleLocation.IsEnabled = isEnabled;
-                textBox_RoundHoleLocationIncrement.IsEnabled = isEnabled;
-                label_RoundHoleLocationMM.IsEnabled = isEnabled;
-            }
+            if (_isInitialized)
+                UpdateRoundingControls();
         }
 
-        private void SaveSettings()
+        private void UpdateRoundingControls()
         {
-            GloryHoleRefreshElevationsSettingsItem = new GloryHoleRefreshElevationsSettings();
+            bool positionEnabled = radioButton_RoundHolesPositionYes.IsChecked == true;
+            RoundHolesPositionButtonName = positionEnabled
+                ? "radioButton_RoundHolesPositionYes" : "radioButton_RoundHolesPositionNo";
+            label_RoundHolePosition.IsEnabled = positionEnabled;
+            textBox_RoundHolePositionIncrement.IsEnabled = positionEnabled;
+            label_RoundHolePositionMM.IsEnabled = positionEnabled;
 
-            RefreshElevationsOptionButtonName = (groupBox_RefreshElevationsOption.Content as Grid)
-                .Children.OfType<RadioButton>()
-                .FirstOrDefault(rb => rb.IsChecked.Value == true)
-                .Name;
-            GloryHoleRefreshElevationsSettingsItem.RefreshElevationsOptionButtonName = RefreshElevationsOptionButtonName;
+            bool locationEnabled = radioButton_RoundHolesLocationYes.IsChecked == true;
+            RoundHolesLocationButtonName = locationEnabled
+                ? "radioButton_RoundHolesLocationYes" : "radioButton_RoundHolesLocationNo";
+            label_RoundHoleLocation.IsEnabled = locationEnabled;
+            textBox_RoundHoleLocationIncrement.IsEnabled = locationEnabled;
+            label_RoundHoleLocationMM.IsEnabled = locationEnabled;
+        }
 
-            GloryHoleRefreshElevationsSettingsItem.RoundHolesPositionButtonName = RoundHolesPositionButtonName;
+        private void RefreshScope_Checked(object sender, RoutedEventArgs e)
+        {
+            if (_isInitialized)
+                UpdateRebindControls();
+        }
 
-            double.TryParse(textBox_RoundHolePositionIncrement.Text, out RoundHolePositionIncrement);
-            GloryHoleRefreshElevationsSettingsItem.RoundHolePositionIncrementValue = textBox_RoundHolePositionIncrement.Text;
+        private void RebindToLevels_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!_isInitialized)
+                return;
 
+            UpdateRebindControls();
+            if (checkBox_RebindToLevels.IsChecked == true)
+                MessageBox.Show(this, RebindWarning, "Перепривязка к уровням",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
 
-            RoundHolesLocationButtonName = (groupBox_RoundHolesLocation.Content as Grid)
-                .Children.OfType<RadioButton>()
-                .FirstOrDefault(rb => rb.IsChecked.Value == true)
-                .Name;
+        private void RebindMode_Checked(object sender, RoutedEventArgs e)
+        {
+            if (_isInitialized)
+                UpdateRebindControls();
+        }
 
-            GloryHoleRefreshElevationsSettingsItem.RoundHolesLocationButtonName = RoundHolesLocationButtonName;
+        private void UpdateRebindControls()
+        {
+            bool rebind = checkBox_RebindToLevels.IsChecked == true;
+            bool canChooseLevel = rebind && rbt_SelectedItems.IsChecked == true;
+            rbt_RebindAutomatically.IsEnabled = rebind;
+            rbt_RebindSelectedLevel.IsEnabled = canChooseLevel;
+            if (!canChooseLevel)
+            {
+                // The scope guard also normalizes stale/restored selections before acceptance.
+                rbt_RebindAutomatically.IsChecked = true;
+                comboBox_RebindLevel.SelectedIndex = -1;
+            }
 
-            double.TryParse(textBox_RoundHoleLocationIncrement.Text, out RoundHoleLocationIncrement);
-            GloryHoleRefreshElevationsSettingsItem.RoundHoleLocationIncrementValue = textBox_RoundHoleLocationIncrement.Text;
+            bool manual = canChooseLevel && rbt_RebindSelectedLevel.IsChecked == true;
+            panel_RebindLevel.Visibility = manual ? Visibility.Visible : Visibility.Collapsed;
+            comboBox_RebindLevel.IsEnabled = manual;
+            textBlock_RebindWarning.Visibility = rebind ? Visibility.Visible : Visibility.Collapsed;
+        }
 
+        private bool TrySaveSettings()
+        {
+            UpdateRoundingControls();
+            UpdateRebindControls();
+            double positionIncrement;
+            if (!TryReadIncrement(textBox_RoundHolePositionIncrement,
+                _settings == null ? null : _settings.RoundHolePositionIncrementValue, out positionIncrement))
+                return false;
 
-            GloryHoleRefreshElevationsSettingsItem.UpdaterOn = checkBox_UpdaterOn.IsChecked ?? false;
+            double locationIncrement;
+            if (!TryReadIncrement(textBox_RoundHoleLocationIncrement,
+                _settings == null ? null : _settings.RoundHoleLocationIncrementValue, out locationIncrement))
+                return false;
 
-            GloryHoleRefreshElevationsSettingsItem.SaveSettings();
+            bool rebind = checkBox_RebindToLevels.IsChecked == true;
+            bool manual = rebind && rbt_SelectedItems.IsChecked == true
+                && rbt_RebindSelectedLevel.IsChecked == true;
+            RebindLevel selectedLevel = comboBox_RebindLevel.SelectedItem as RebindLevel;
+            if (manual && selectedLevel == null)
+            {
+                MessageBox.Show(this, "Выберите уровень.", Title, MessageBoxButton.OK, MessageBoxImage.Information);
+                comboBox_RebindLevel.Focus();
+                return false;
+            }
+
+            RefreshElevationsOptionButtonName = rbt_SelectedItems.IsChecked == true
+                ? "rbt_SelectedItems" : "rbt_AllProject";
+            var settings = new GloryHoleRefreshElevationsSettings
+            {
+                RefreshElevationsOptionButtonName = RefreshElevationsOptionButtonName,
+                RoundHolesPositionButtonName = RoundHolesPositionButtonName,
+                RoundHolePositionIncrementValue = textBox_RoundHolePositionIncrement.Text,
+                RoundHolesLocationButtonName = RoundHolesLocationButtonName,
+                RoundHoleLocationIncrementValue = textBox_RoundHoleLocationIncrement.Text,
+                UpdaterOn = checkBox_UpdaterOn.IsChecked == true
+            };
+
+            try
+            {
+                settings.SaveSettings();
+            }
+            catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException)
+            {
+                MessageBox.Show(this, "Не удалось сохранить настройки.\n" + exception.Message,
+                    Title, MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+
+            _settings = settings;
+            RoundHolePositionIncrement = positionIncrement;
+            RoundHoleLocationIncrement = locationIncrement;
+            RebindToLevels = rebind;
+            RebindToSelectedLevel = manual;
+            SelectedRebindLevelUniqueId = manual ? selectedLevel.UniqueId : string.Empty;
+            return true;
+        }
+
+        private bool TryReadIncrement(TextBox input, string previousValue, out double increment)
+        {
+            if (TryParsePositiveIncrement(input.Text, out increment))
+            {
+                // The automatic updater reads this XML using the current culture.
+                input.Text = increment.ToString(CultureInfo.CurrentCulture);
+                return true;
+            }
+
+            if (input.IsEnabled)
+            {
+                MessageBox.Show(this, "Шаг округления должен быть числом больше нуля.",
+                    Title, MessageBoxButton.OK, MessageBoxImage.Information);
+                input.Focus();
+                input.SelectAll();
+                return false;
+            }
+
+            // A disabled rounding field must not block the operation or persist an invalid value.
+            if (!TryParsePositiveIncrement(previousValue, out increment))
+                increment = 5;
+            input.Text = increment.ToString(CultureInfo.CurrentCulture);
+            return true;
+        }
+
+        private static bool TryParsePositiveIncrement(string text, out double increment)
+        {
+            return double.TryParse((text ?? string.Empty).Trim().Replace(',', '.'),
+                NumberStyles.Float, CultureInfo.InvariantCulture, out increment)
+                && !double.IsNaN(increment) && !double.IsInfinity(increment) && increment > 0;
         }
     }
 }

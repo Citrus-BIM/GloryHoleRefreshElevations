@@ -1,4 +1,4 @@
-﻿using Autodesk.Revit.DB;
+using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 using System;
@@ -53,6 +53,27 @@ namespace GloryHoleRefreshElevations
 
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {
+            try { return ExecuteCore(commandData); }
+            catch (Autodesk.Revit.Exceptions.OperationCanceledException) { return Result.Cancelled; }
+            catch (Exception ex)
+            {
+                var dialog = new TaskDialog("Обновить отметки")
+                {
+                    MainInstruction = "Не удалось выполнить обновление.",
+                    MainContent = ex is NullReferenceException
+                        ? "Не удалось прочитать данные элементов или настроек. Подробности доступны ниже."
+                        : ex.Message,
+                    ExpandedContent = ex.ToString(),
+                    MainIcon = TaskDialogIcon.TaskDialogIconWarning,
+                    CommonButtons = TaskDialogCommonButtons.Close
+                };
+                dialog.Show();
+                return Result.Cancelled;
+            }
+        }
+
+        private Result ExecuteCore(ExternalCommandData commandData)
+        {
             try { _ = GetPluginStartInfo(); } catch { }
 
             Document doc = commandData.Application.ActiveUIDocument.Document;
@@ -62,7 +83,7 @@ namespace GloryHoleRefreshElevations
             List<GridLine2D> gridLines = CollectAllGridLinesInHostXY(doc);
             double preferHostMaxDistFt = MmToFt(PREFER_HOST_MAX_DISTANCE_MM);
 
-            GloryHoleRefreshElevationsWPF gloryHoleRefreshElevationsWPF = new GloryHoleRefreshElevationsWPF();
+            GloryHoleRefreshElevationsWPF gloryHoleRefreshElevationsWPF = new GloryHoleRefreshElevationsWPF(LevelRebindingService.CollectLevels(doc));
             gloryHoleRefreshElevationsWPF.ShowDialog();
             if (gloryHoleRefreshElevationsWPF.DialogResult != true)
                 return Result.Cancelled;
@@ -92,7 +113,7 @@ namespace GloryHoleRefreshElevations
                         if (validFamilies.Contains(familyName))
                             return true;
 
-                        if (!string.IsNullOrEmpty(familyCode) && validCodes.Contains(familyCode))
+                        if (!string.IsNullOrWhiteSpace(familyCode) && validCodes.Contains(familyCode))
                             return true;
 
                         return false;
@@ -138,208 +159,287 @@ namespace GloryHoleRefreshElevations
                 }
             }
 
-            using (Transaction t = new Transaction(doc))
+            Action<FamilyInstance> refresh = instance =>
             {
-                t.Start("Обновление отметок");
+                if (IsCategory(instance, BuiltInCategory.OST_Windows))
+                    RefreshWeandrevit(instance, roundHolesPositionButtonName, roundHolePositionIncrement);
+                else
+                    RefreshIntersection(doc, instance, gridLines, preferHostMaxDistFt,
+                        roundHolesPositionButtonName, roundHolePositionIncrement,
+                        roundHolesLocationButtonName, roundHoleLocationIncrement);
+            };
+            var report = LevelRebindingService.Execute(doc,
+                intersectionPointFamilyInstanceList.Concat(intersectionPointWeandrevitList),
+                gloryHoleRefreshElevationsWPF.RebindToLevels,
+                refreshElevationsOptionButtonName == "rbt_SelectedItems",
+                gloryHoleRefreshElevationsWPF.RebindToSelectedLevel,
+                gloryHoleRefreshElevationsWPF.SelectedRebindLevelUniqueId, refresh,
+                roundHolesPositionButtonName == "radioButton_RoundHolesPositionYes",
+                roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes");
+            ShowReport(report, sel, gloryHoleRefreshElevationsWPF.RebindToLevels);
+            return report.Failure == null ? Result.Succeeded : Result.Cancelled;
+        }
 
-                foreach (FamilyInstance intersectionPoint in intersectionPointFamilyInstanceList)
+        private void RefreshIntersection(Document doc, FamilyInstance intersectionPoint,
+            List<GridLine2D> gridLines, double preferHostMaxDistFt,
+            string roundHolesPositionButtonName, double roundHolePositionIncrement,
+            string roundHolesLocationButtonName, double roundHoleLocationIncrement)
+        {
+            string familyCode = intersectionPoint.Symbol.get_Parameter(gh_FamilyCode)?.AsString();
+
+            // A family created by a replacement script can have no native level.
+            // In ordinary refresh this is a local skip; the optional rebind phase repairs it first.
+            var baseLevel = doc.GetElement(intersectionPoint.LevelId) as Level;
+            if (baseLevel == null)
+                throw new InvalidOperationException("Не задан уровень. Включите «Перепривязать к уровням».");
+            RequiredParameter(intersectionPoint.get_Parameter(levelOffsetGuid), "ADSK_Размер_Смещение от уровня");
+            RequiredParameter(intersectionPoint.get_Parameter(heightOfBaseLevelGuid),
+                "Рзм.ВысотаБазовогоУровня").Set(baseLevel.Elevation);
+
+            if (!string.IsNullOrWhiteSpace(familyCode))
+            {
+                // 111..116 — пересечения в стенах
+                if (familyCode == "111" || familyCode == "112" || familyCode == "113" || familyCode == "114" || familyCode == "115" || familyCode == "116")
                 {
-                    string familyCode = intersectionPoint.Symbol.get_Parameter(gh_FamilyCode)?.AsString();
-
-                    // Elevation базового уровня
-                    intersectionPoint.get_Parameter(heightOfBaseLevelGuid)
-                        .Set((doc.GetElement(intersectionPoint.LevelId) as Level).Elevation);
-
-                    if (!string.IsNullOrEmpty(familyCode))
+                    if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
                     {
-                        // 111..116 — пересечения в стенах
-                        if (familyCode == "111" || familyCode == "112" || familyCode == "113" || familyCode == "114" || familyCode == "115" || familyCode == "116")
+                        double elev = NativeOffset(intersectionPoint, BuiltInParameter.INSTANCE_ELEVATION_PARAM);
+                        if (roundHolesPositionButtonName == "radioButton_RoundHolesPositionYes")
                         {
-                            if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
-                            {
-                                double elev = intersectionPoint.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM).AsDouble();
-                                if (roundHolesPositionButtonName == "radioButton_RoundHolesPositionYes")
-                                {
-                                    elev = RoundToIncrement(elev, roundHolePositionIncrement);
-                                    intersectionPoint.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM).Set(elev);
-                                }
-                                intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
-                            }
-
-                            if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
-                            {
-                                XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
-                                if (originIntersection != null)
-                                {
-                                    bool alignByEdges = (familyCode == "111" || familyCode == "113" || familyCode == "115");
-                                    RoundHolesPositionInWalls(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
-                                }
-                            }
+                            elev = RoundToIncrement(elev, roundHolePositionIncrement);
+                            intersectionPoint.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM).Set(elev);
                         }
-                        // 121..124 — пересечения в плитах
-                        else if (familyCode == "121" || familyCode == "122" || familyCode == "123" || familyCode == "124")
-                        {
-                            if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
-                            {
-                                double elev = intersectionPoint.get_Parameter(BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM).AsDouble() - 50 / 304.8;
-                                intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
-                            }
+                        intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
+                    }
 
-                            if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
-                            {
-                                XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
-                                if (originIntersection != null)
-                                {
-                                    bool alignByEdges = (familyCode == "121" || familyCode == "123");
-                                    RoundHolesPositionInSlabs(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
-                                }
-                            }
+                    if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
+                    {
+                        XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
+                        if (originIntersection != null)
+                        {
+                            bool alignByEdges = (familyCode == "111" || familyCode == "113" || familyCode == "115");
+                            RoundHolesPositionInWalls(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
                         }
-                        // 221..224 — отверстия в плитах с Host
-                        else if (familyCode == "221" || familyCode == "222" || familyCode == "223" || familyCode == "224")
-                        {
-                            if (intersectionPoint.Host != null)
-                            {
-                                if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
-                                {
-                                    double elev = doc.GetElement(intersectionPoint.Host.Id)
-                                        .get_Parameter(BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM).AsDouble();
-                                    intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
-                                }
+                    }
+                }
+                // 121..124 — пересечения в плитах
+                else if (familyCode == "121" || familyCode == "122" || familyCode == "123" || familyCode == "124")
+                {
+                    if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
+                    {
+                        double elev = NativeOffset(intersectionPoint, BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM) - 50 / 304.8;
+                        intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
+                    }
 
-                                if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
-                                {
-                                    XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
-                                    if (originIntersection != null)
-                                    {
-                                        bool alignByEdges = (familyCode == "221" || familyCode == "223");
-                                        RoundHolesPositionInSlabs(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
-                                    }
-                                }
-                            }
-                            else
+                    if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
+                    {
+                        XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
+                        if (originIntersection != null)
+                        {
+                            bool alignByEdges = (familyCode == "121" || familyCode == "123");
+                            RoundHolesPositionInSlabs(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
+                        }
+                    }
+                }
+                // 221..224 — отверстия в плитах с Host
+                else if (familyCode == "221" || familyCode == "222" || familyCode == "223" || familyCode == "224")
+                {
+                    if (intersectionPoint.Host != null)
+                    {
+                        if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
+                        {
+                            double elev = FloorOffset(intersectionPoint);
+                            intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
+                        }
+
+                        if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
+                        {
+                            XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
+                            if (originIntersection != null)
                             {
-                                if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
-                                    intersectionPoint.get_Parameter(levelOffsetGuid).Set(0);
+                                bool alignByEdges = (familyCode == "221" || familyCode == "223");
+                                RoundHolesPositionInSlabs(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
                             }
                         }
                     }
                     else
                     {
-                        // fallback по имени семейства (как было)
-                        if (intersectionPoint.Symbol.FamilyName == "Пересечение_Плита_Прямоугольное"
-                            || intersectionPoint.Symbol.FamilyName == "Пересечение_Плита_Круглое")
-                        {
-                            if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
-                            {
-                                double elev = intersectionPoint.get_Parameter(BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM).AsDouble() - 50 / 304.8;
-                                intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
-                            }
+                        if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
+                            intersectionPoint.get_Parameter(levelOffsetGuid).Set(0);
+                    }
+                }
+            }
+            else
+            {
+                // fallback по имени семейства (как было)
+                if (intersectionPoint.Symbol.FamilyName == "Пересечение_Плита_Прямоугольное"
+                    || intersectionPoint.Symbol.FamilyName == "Пересечение_Плита_Круглое")
+                {
+                    if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
+                    {
+                        double elev = NativeOffset(intersectionPoint, BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM) - 50 / 304.8;
+                        intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
+                    }
 
-                            if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
+                    if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
+                    {
+                        XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
+                        if (originIntersection != null)
+                        {
+                            bool alignByEdges = intersectionPoint.Symbol.FamilyName == "Пересечение_Плита_Прямоугольное";
+                            RoundHolesPositionInSlabs(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
+                        }
+                    }
+                }
+                else if (intersectionPoint.Symbol.FamilyName == "Отверстие_Плита_Прямоугольное"
+                    || intersectionPoint.Symbol.FamilyName == "Отверстие_Плита_Круглое"
+                    || intersectionPoint.Symbol.FamilyName == "Гильза_Плита")
+                {
+                    if (intersectionPoint.Host != null)
+                    {
+                        if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
+                        {
+                            double elev = FloorOffset(intersectionPoint);
+                            intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
+                        }
+
+                        if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
+                        {
+                            XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
+                            if (originIntersection != null)
                             {
-                                XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
-                                if (originIntersection != null)
-                                {
-                                    bool alignByEdges = intersectionPoint.Symbol.FamilyName == "Пересечение_Плита_Прямоугольное";
-                                    RoundHolesPositionInSlabs(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
-                                }
+                                bool alignByEdges = intersectionPoint.Symbol.FamilyName == "Отверстие_Плита_Прямоугольное";
+                                RoundHolesPositionInSlabs(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
                             }
                         }
-                        else if (intersectionPoint.Symbol.FamilyName == "Отверстие_Плита_Прямоугольное"
-                            || intersectionPoint.Symbol.FamilyName == "Отверстие_Плита_Круглое"
-                            || intersectionPoint.Symbol.FamilyName == "Гильза_Плита")
+                    }
+                    else
+                    {
+                        if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
+                            intersectionPoint.get_Parameter(levelOffsetGuid).Set(0);
+
+                        if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
                         {
-                            if (intersectionPoint.Host != null)
+                            XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
+                            if (originIntersection != null)
                             {
-                                if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
-                                {
-                                    double elev = doc.GetElement(intersectionPoint.Host.Id)
-                                        .get_Parameter(BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM).AsDouble();
-                                    intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
-                                }
+                                bool alignByEdges =
+                                    intersectionPoint.Symbol.FamilyName == "Пересечение_Стена_Прямоугольное" ||
+                                    intersectionPoint.Symbol.FamilyName == "Отверстие_Стена_Прямоугольное";
 
-                                if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
-                                {
-                                    XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
-                                    if (originIntersection != null)
-                                    {
-                                        bool alignByEdges = intersectionPoint.Symbol.FamilyName == "Отверстие_Плита_Прямоугольное";
-                                        RoundHolesPositionInSlabs(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
-                                    }
-                                }
-                            }
-                            else
-                            {
-                                if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
-                                    intersectionPoint.get_Parameter(levelOffsetGuid).Set(0);
-
-                                if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
-                                {
-                                    XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
-                                    if (originIntersection != null)
-                                    {
-                                        bool alignByEdges =
-                                            intersectionPoint.Symbol.FamilyName == "Пересечение_Стена_Прямоугольное" ||
-                                            intersectionPoint.Symbol.FamilyName == "Отверстие_Стена_Прямоугольное";
-
-                                        RoundHolesPositionInWalls(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
-                                    }
-                                }
-                            }
-                        }
-                        else
-                        {
-                            if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
-                            {
-                                double elev = intersectionPoint.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM).AsDouble();
-                                if (roundHolesPositionButtonName == "radioButton_RoundHolesPositionYes")
-                                {
-                                    elev = RoundToIncrement(elev, roundHolePositionIncrement);
-                                    intersectionPoint.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM).Set(elev);
-                                }
-                                intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
-                            }
-
-                            if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
-                            {
-                                XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
-                                if (originIntersection != null)
-                                {
-                                    bool alignByEdges =
-                                        intersectionPoint.Symbol.FamilyName == "Пересечение_Стена_Прямоугольное" ||
-                                        intersectionPoint.Symbol.FamilyName == "Отверстие_Стена_Прямоугольное";
-
-                                    RoundHolesPositionInWalls(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
-                                }
+                                RoundHolesPositionInWalls(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
                             }
                         }
                     }
                 }
-
-                // weandrevit
-                foreach (FamilyInstance intersectionPoint in intersectionPointWeandrevitList)
+                else
                 {
-                    double elev = intersectionPoint.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM).AsDouble();
                     if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
                     {
+                        double elev = NativeOffset(intersectionPoint, BuiltInParameter.INSTANCE_ELEVATION_PARAM);
                         if (roundHolesPositionButtonName == "radioButton_RoundHolesPositionYes")
                         {
                             elev = RoundToIncrement(elev, roundHolePositionIncrement);
                             intersectionPoint.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM).Set(elev);
-                            intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
                         }
-                        else
+                        intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
+                    }
+
+                    if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
+                    {
+                        XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
+                        if (originIntersection != null)
                         {
-                            intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
+                            bool alignByEdges =
+                                intersectionPoint.Symbol.FamilyName == "Пересечение_Стена_Прямоугольное" ||
+                                intersectionPoint.Symbol.FamilyName == "Отверстие_Стена_Прямоугольное";
+
+                            RoundHolesPositionInWalls(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
                         }
                     }
                 }
-
-                t.Commit();
             }
+        }
 
-            return Result.Succeeded;
+        private void RefreshWeandrevit(FamilyInstance intersectionPoint,
+            string roundHolesPositionButtonName, double roundHolePositionIncrement)
+        {
+            RequiredParameter(intersectionPoint.get_Parameter(levelOffsetGuid), "ADSK_Размер_Смещение от уровня");
+            double elev = NativeOffset(intersectionPoint, BuiltInParameter.INSTANCE_ELEVATION_PARAM);
+            if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
+            {
+                if (roundHolesPositionButtonName == "radioButton_RoundHolesPositionYes")
+                {
+                    elev = RoundToIncrement(elev, roundHolePositionIncrement);
+                    intersectionPoint.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM).Set(elev);
+                    intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
+                }
+                else
+                {
+                    intersectionPoint.get_Parameter(levelOffsetGuid).Set(elev);
+                }
+            }
+        }
+
+        private static Parameter RequiredParameter(Parameter? parameter, string name)
+        {
+            if (parameter == null)
+                throw new InvalidOperationException("Отсутствует параметр «" + name + "». Проверьте семейство болванки.");
+            if (parameter.StorageType != StorageType.Double)
+                throw new InvalidOperationException("Неверный тип параметра «" + name + "».");
+            return parameter;
+        }
+
+        private static double NativeOffset(FamilyInstance instance, BuiltInParameter parameter)
+        {
+            return RequiredParameter(instance.get_Parameter(parameter), "Смещение от уровня").AsDouble();
+        }
+
+        private static double FloorOffset(FamilyInstance instance)
+        {
+            return RequiredParameter(instance.Host?.get_Parameter(BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM),
+                "Смещение перекрытия от уровня").AsDouble();
+        }
+
+        private static void ShowReport(RebindReport report, Selection selection, bool rebind)
+        {
+            if (!rebind && report.Failure == null && report.UpdaterRestoreFailure == null && report.SkippedIds.Count == 0)
+                return;
+
+            string? content = report.Failure;
+            if (content == null)
+            {
+                content = rebind
+                    ? "Перепривязано: " + report.Changed + " (без исходного уровня: " + report.Restored + ").\n"
+                        + "Уровень уже подходил: " + report.Unchanged + ".\n"
+                    : "Обновлено: " + report.Refreshed + ".\n";
+                if (rebind && report.Refreshed > 0)
+                    content += "Обновлены только отметки готовых отверстий: " + report.Refreshed + ".\n";
+                content += "Пропущено: " + report.SkippedIds.Count + ".";
+                if (report.Reasons.Count > 0)
+                    content += "\n\n" + string.Join("\n", report.Reasons.Take(6).Select(p => p.Value + " — " + p.Key));
+                if (report.Reasons.Count > 6) content += "\nОстальные причины — в подробностях.";
+                if (rebind) content += "\n\nПосле перепривязки проверьте привязку к уровням.";
+            }
+            if (report.UpdaterRestoreFailure != null)
+                content += "\n\nНе удалось восстановить автоматическое обновление: "
+                    + report.UpdaterRestoreFailure + "\nПерезапустите Revit перед дальнейшей работой.";
+
+            var dialog = new TaskDialog("Обновить отметки")
+            {
+                MainInstruction = report.Failure == null ? "Обновление завершено" : "Обновление отменено",
+                MainContent = content,
+                ExpandedContent = string.Join("\n", report.Details),
+                CommonButtons = TaskDialogCommonButtons.Close
+            };
+            if (report.Failure == null && report.SkippedIds.Count > 0)
+                dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Выделить пропущенные элементы");
+            if (dialog.Show() == TaskDialogResult.CommandLink1)
+            {
+                // Model changes are already committed; a view/selection error must not undo them.
+                try { selection.SetElementIds(report.SkippedIds); }
+                catch (Exception ex) { TaskDialog.Show("Обновить отметки", "Не удалось выделить элементы: " + ex.Message); }
+            }
         }
 
         private double RoundToIncrement(double value, double increment)

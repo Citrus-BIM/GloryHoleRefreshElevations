@@ -36,6 +36,8 @@
     </PropertyGroup>
     <PropertyGroup Condition="'$(Configuration)' == 'R2026'">
         <RevitVersion>2026</RevitVersion>
+        <!-- Pin the .NET 8 API: package 2026.5 uses .NET 10 assemblies. -->
+        <RevitApiPackageVersion>2026.0.0</RevitApiPackageVersion>
         <TargetFramework>net8.0-windows</TargetFramework>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Configuration)' == 'R2027'">
@@ -45,6 +47,7 @@
 
     <!-- OutputPath и DefineConstants -->
     <PropertyGroup Condition="'$(RevitVersion)' != ''">
+        <RevitApiPackageVersion Condition="'$(RevitApiPackageVersion)' == ''">$(RevitVersion).*</RevitApiPackageVersion>
         <OutputPath>bin\$(Configuration)\</OutputPath>
         <DefineConstants>DEBUG;$(Configuration);REVIT_$(RevitVersion)</DefineConstants>
     </PropertyGroup>
@@ -68,7 +71,7 @@
         <PackageReference
                 Condition="'$(Configuration)' == 'R$(RevitVersion)'"
                 Include="Revit_All_Main_Versions_API_x64"
-                Version="$(RevitVersion).*"
+                Version="$(RevitApiPackageVersion)"
                 IncludeAssets="build; compile"/>
     </ItemGroup>
 

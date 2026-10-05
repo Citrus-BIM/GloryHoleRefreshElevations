@@ -6,17 +6,15 @@
         xmlns:local="clr-namespace:GloryHoleRefreshElevations"
         mc:Ignorable="d"
         Title="Обновить отметки"
-        Height="460"
+        SizeToContent="Height"
         Width="430"
-        MinHeight="460"
+        MinHeight="430"
         MinWidth="430"
-        MaxHeight="460"
         MaxWidth="430"
         WindowStyle="SingleBorderWindow"
         ResizeMode="NoResize"
         Icon="Resources/citrus.ico"
         WindowStartupLocation="CenterScreen"
-        KeyDown="GloryHoleRefreshElevationsWPF_KeyDown"
         FontFamily="{DynamicResource BaseFont}"
         FontSize="{DynamicResource FontSizeBase}"
         Foreground="{DynamicResource TextBrush}"
@@ -38,12 +36,19 @@
 
     <Grid Margin="10,0,10,10">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled" Focusable="False">
+        <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -65,7 +70,8 @@
                              VerticalAlignment="Center"
                              VerticalContentAlignment="Center"
                              Padding="5,0,0,0"
-                             IsChecked="True"/>
+                             IsChecked="True"
+                             Checked="RefreshScope_Checked"/>
 
                 <RadioButton x:Name="rbt_SelectedItems"
                              Grid.Column="1"
@@ -74,7 +80,8 @@
                              HorizontalAlignment="Center"
                              VerticalAlignment="Center"
                              VerticalContentAlignment="Center"
-                             Padding="5,0,0,0"/>
+                             Padding="5,0,0,0"
+                             Checked="RefreshScope_Checked"/>
             </Grid>
         </GroupBox>
 
@@ -213,8 +220,46 @@
                    IsEnabled="False"/>
         </Grid>
 
+        <GroupBox Grid.Row="5" Header="Привязка болванок:" Margin="0,0,0,8">
+            <StackPanel Margin="8,2,8,8">
+                <CheckBox x:Name="checkBox_RebindToLevels"
+                          Content="Перепривязать к уровням"
+                          FontWeight="SemiBold" MinHeight="28"
+                          IsChecked="False"
+                          Checked="RebindToLevels_Changed"
+                          Unchecked="RebindToLevels_Changed"/>
+                <WrapPanel Margin="24,4,0,0">
+                    <RadioButton x:Name="rbt_RebindAutomatically"
+                                 Content="Автоматически" GroupName="RebindMode"
+                                 MinHeight="28" Margin="0,0,16,0"
+                                 IsChecked="True" IsEnabled="False"
+                                 Checked="RebindMode_Checked"/>
+                    <RadioButton x:Name="rbt_RebindSelectedLevel"
+                                 Content="К выбранному уровню" GroupName="RebindMode"
+                                 MinHeight="28" IsEnabled="False"
+                                 Checked="RebindMode_Checked"/>
+                </WrapPanel>
+                <Grid x:Name="panel_RebindLevel" Visibility="Collapsed" Margin="24,6,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Label Content="Уровень:" Target="{Binding ElementName=comboBox_RebindLevel}"
+                           VerticalContentAlignment="Center" Margin="0,0,8,0"/>
+                    <ComboBox x:Name="comboBox_RebindLevel" Grid.Column="1"
+                              MinHeight="32" DisplayMemberPath="DisplayName"
+                              SelectedValuePath="UniqueId"
+                              AutomationProperties.Name="Уровень для перепривязки"/>
+                </Grid>
+                <TextBlock x:Name="textBlock_RebindWarning" Visibility="Collapsed"
+                           Text="После перепривязки проверьте привязку к уровням."
+                           TextWrapping="Wrap" Margin="24,8,0,0"
+                           Foreground="{DynamicResource SubtleTextBrush}"/>
+            </StackPanel>
+        </GroupBox>
+
         <CheckBox x:Name="checkBox_UpdaterOn"
-                  Grid.Row="5"
+                  Grid.Row="6"
                   Content="Обновлять отметки автоматически"
                   Height="32"
                   VerticalAlignment="Top"
@@ -230,8 +275,10 @@
                 </ToolTip>
             </CheckBox.ToolTip>
         </CheckBox>
+        </Grid>
+        </ScrollViewer>
 
-        <Grid Grid.Row="6" Margin="0,0,0,0">
+        <Grid Grid.Row="1" Margin="0,4,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
