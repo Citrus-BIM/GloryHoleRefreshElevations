@@ -264,8 +264,7 @@ namespace GloryHoleRefreshElevations
                     }
                     else
                     {
-                        if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
-                            intersectionPoint.get_Parameter(levelOffsetGuid).Set(0);
+                        OpeningRefreshRules.RequireHost(false);
                     }
                 }
             }
@@ -315,21 +314,7 @@ namespace GloryHoleRefreshElevations
                     }
                     else
                     {
-                        if (intersectionPoint.get_Parameter(levelOffsetGuid) != null)
-                            intersectionPoint.get_Parameter(levelOffsetGuid).Set(0);
-
-                        if (roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes")
-                        {
-                            XYZ originIntersection = (intersectionPoint.Location as LocationPoint)?.Point;
-                            if (originIntersection != null)
-                            {
-                                bool alignByEdges =
-                                    intersectionPoint.Symbol.FamilyName == "Пересечение_Стена_Прямоугольное" ||
-                                    intersectionPoint.Symbol.FamilyName == "Отверстие_Стена_Прямоугольное";
-
-                                RoundHolesPositionInWalls(doc, gridLines, preferHostMaxDistFt, roundHoleLocationIncrement, originIntersection, intersectionPoint, alignByEdges);
-                            }
-                        }
+                        OpeningRefreshRules.RequireHost(false);
                     }
                 }
                 else

@@ -13,4 +13,5 @@
     <Compile Include="..\GloryHoleRefreshElevations\RebindLevelRules.cs" Link="RebindLevelRules.cs" />
     <Compile Include="..\GloryHoleRefreshElevations\UpdaterSuspension.cs" Link="UpdaterSuspension.cs" />
   </ItemGroup>
+  <ItemGroup><Compile Include="..\GloryHoleRefreshElevations\OpeningRefreshRules.cs" Link="Production\OpeningRefreshRules.cs" /></ItemGroup>
 </Project>

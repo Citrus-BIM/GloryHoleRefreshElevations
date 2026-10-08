@@ -110,6 +110,8 @@ namespace GloryHoleRefreshElevations
         {
             try
             {
+                if (IsFinishedOpening(instance))
+                    OpeningRefreshRules.RequireHost(instance.Host != null);
                 RunTransaction(doc, "Обновить отметки элемента", () => refresh(instance), false);
                 report.Refreshed++;
             }
