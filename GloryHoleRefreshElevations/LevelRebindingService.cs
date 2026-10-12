@@ -415,22 +415,18 @@ namespace GloryHoleRefreshElevations
             private string uniqueId = string.Empty;
             private ElementId typeId = ElementId.InvalidElementId;
             private Transform transform = Transform.Identity;
-            private XYZ[] boxCorners = Array.Empty<XYZ>();
             private bool mirrored, handFlipped, facingFlipped;
             private string? guid;
             private double?[] dimensions = Array.Empty<double?>();
 
             public static PlacementSnapshot Capture(FamilyInstance instance)
             {
-                var box = instance.get_BoundingBox(null);
-                if (box == null) throw new SkipException("Недоступна геометрия болванки");
                 return new PlacementSnapshot
                 {
                     Point = ((LocationPoint)instance.Location).Point,
                     uniqueId = instance.UniqueId,
                     typeId = instance.GetTypeId(),
                     transform = instance.GetTransform(),
-                    boxCorners = Corners(box),
                     mirrored = instance.Mirrored,
                     handFlipped = instance.HandFlipped,
                     facingFlipped = instance.FacingFlipped,
@@ -455,28 +451,19 @@ namespace GloryHoleRefreshElevations
                 for (int i = 0; i < dimensions.Length; i++)
                     same &= dimensions[i].HasValue == now.dimensions[i].HasValue
                         && (!dimensions[i].HasValue || Near(dimensions[i].GetValueOrDefault(), now.dimensions[i].GetValueOrDefault()));
-                for (int i = 0; i < boxCorners.Length; i++)
-                    same &= Near(boxCorners[i] + move, now.boxCorners[i]);
                 if (!same) throw new SkipException("Изменились положение, размеры или идентификатор болванки");
             }
 
             private static double?[] Dimensions(FamilyInstance instance)
             {
+                // Check the task's size parameters, not its BoundingBox: visibility
+                // helpers may change their extent when the reference level changes.
                 return DimensionIds.SelectMany(id => new[]
                     { instance.get_Parameter(id), instance.Symbol.get_Parameter(id) })
                     .Select(p => p != null && p.StorageType == StorageType.Double ? (double?)p.AsDouble() : null)
                     .ToArray();
             }
 
-            private static XYZ[] Corners(BoundingBoxXYZ box)
-            {
-                var result = new List<XYZ>();
-                foreach (double x in new[] { box.Min.X, box.Max.X })
-                    foreach (double y in new[] { box.Min.Y, box.Max.Y })
-                        foreach (double z in new[] { box.Min.Z, box.Max.Z })
-                            result.Add(box.Transform.OfPoint(new XYZ(x, y, z)));
-                return result.ToArray();
-            }
         }
     }
 }
