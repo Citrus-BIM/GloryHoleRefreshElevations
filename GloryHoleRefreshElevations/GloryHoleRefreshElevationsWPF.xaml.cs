@@ -10,7 +10,6 @@ namespace GloryHoleRefreshElevations
 {
     public partial class GloryHoleRefreshElevationsWPF : Window
     {
-        private const string RebindWarning = "После перепривязки проверьте привязку к уровням.";
         private GloryHoleRefreshElevationsSettings _settings;
         private bool _isInitialized;
 
@@ -118,9 +117,6 @@ namespace GloryHoleRefreshElevations
                 return;
 
             UpdateRebindControls();
-            if (checkBox_RebindToLevels.IsChecked == true)
-                MessageBox.Show(this, RebindWarning, "Перепривязка к уровням",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
         }
 
         private void RebindMode_Checked(object sender, RoutedEventArgs e)
@@ -132,7 +128,7 @@ namespace GloryHoleRefreshElevations
         private void UpdateRebindControls()
         {
             bool rebind = checkBox_RebindToLevels.IsChecked == true;
-            bool canChooseLevel = rebind && rbt_SelectedItems.IsChecked == true;
+            bool canChooseLevel = OpeningRecreationUiPolicy.CanChooseLevel(rebind, rbt_SelectedItems.IsChecked == true);
             rbt_RebindAutomatically.IsEnabled = rebind;
             rbt_RebindSelectedLevel.IsEnabled = canChooseLevel;
             if (!canChooseLevel)

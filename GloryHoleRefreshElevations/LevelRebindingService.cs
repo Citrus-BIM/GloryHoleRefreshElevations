@@ -8,6 +8,8 @@ namespace GloryHoleRefreshElevations
     internal sealed class RebindReport
     {
         public int Changed { get; set; }
+        public int Recreated { get; set; }
+        public List<ElementId> ReplacementIds { get; } = new List<ElementId>();
         public int Restored { get; set; }
         public int Unchanged { get; set; }
         public int Refreshed { get; set; }
@@ -55,9 +57,11 @@ namespace GloryHoleRefreshElevations
 
         public static RebindReport Execute(Document doc, IEnumerable<FamilyInstance> instances,
             bool rebind, bool selectedScope, bool manual, string targetLevelUniqueId, Action<FamilyInstance> refresh,
-            bool roundHeight, bool roundLocation)
+            bool roundHeight, bool roundLocation, Func<FamilyInstance, OpeningReplacementMetadata>? captureMetadata = null)
         {
             var report = new RebindReport();
+            var afterCommit = new List<Action>();
+            var completedDetails = new List<string>();
             UpdaterSuspension? suspension = null;
             try
             {
@@ -71,16 +75,25 @@ namespace GloryHoleRefreshElevations
                     throw new InvalidOperationException("Выбранный уровень больше недоступен.");
 
                 var levels = CollectLevels(doc);
+                // Materialize IDs before deleting any dependent elements or invalidating old API wrappers.
+                var selected = instances.GroupBy(i => i.Id).Select(g => g.First())
+                    .Select(i => new { i.Id, i.Name }).ToList();
                 suspension = new UpdaterSuspension(new RevitUpdaterState());
                 using (var operation = new TransactionGroup(doc,
                     rebind ? "Обновление отметок и перепривязка" : "Обновление отметок"))
                 {
                     RequireStarted(operation.Start());
-                    foreach (var instance in instances.GroupBy(i => i.Id).Select(g => g.First()))
+                    foreach (var source in selected)
                     {
+                        var instance = doc.GetElement(source.Id) as FamilyInstance;
+                        if (instance == null) { report.Skip(source.Id, "Элемент больше недоступен", source.Name); continue; }
                         if (rebind && IsFinishedOpening(instance))
-                            ProcessOpening(doc, instance, levels, manualLevel, refresh,
-                                roundHeight, roundLocation, report);
+                        {
+                            if (!selectedScope || !manual || manualLevel == null)
+                                report.Skip(source.Id, "Для готового отверстия нужны выбранные элементы и явно выбранный уровень", source.Name);
+                            else ProcessOpening(doc, instance, manualLevel, refresh, report, afterCommit, completedDetails,
+                                captureMetadata ?? OpeningReplacementMetadata.Capture);
+                        }
                         else if (rebind)
                             ProcessInstance(doc, instance, levels, manualLevel, refresh,
                                 roundHeight, roundLocation, report);
@@ -96,6 +109,10 @@ namespace GloryHoleRefreshElevations
             {
                 // In particular, never continue reading a document after RegenerationFailedException.
                 report.Changed = 0;
+                report.Recreated = 0;
+                report.ReplacementIds.Clear();
+                afterCommit.Clear();
+                completedDetails.Clear();
                 report.Restored = 0;
                 report.Unchanged = 0;
                 report.Refreshed = 0;
@@ -110,6 +127,15 @@ namespace GloryHoleRefreshElevations
                     try { suspension.Dispose(); }
                     catch (Exception ex) { report.UpdaterRestoreFailure = ex.Message; }
                 }
+            }
+            // Optional external bookkeeping is never inside geometry transactions, and cannot
+            // turn a committed model change into a false 'operation rolled back' report.
+            if (report.Failure == null)
+            {
+                report.Details.AddRange(completedDetails);
+                foreach (var callback in afterCommit)
+                    try { callback(); }
+                    catch (Exception ex) { report.Details.Add("Отверстие сохранено; не удалось обновить внешние связи: " + ex.Message); }
             }
             return report;
         }
@@ -139,8 +165,8 @@ namespace GloryHoleRefreshElevations
         }
 
         private static void ProcessOpening(Document doc, FamilyInstance instance,
-            IReadOnlyList<RebindLevel> levels, Level? manualLevel, Action<FamilyInstance> refresh,
-            bool roundHeight, bool roundLocation, RebindReport report)
+            Level target, Action<FamilyInstance> refresh, RebindReport report, List<Action> afterCommit,
+            List<string> completedDetails, Func<FamilyInstance, OpeningReplacementMetadata> captureMetadata)
         {
             // Hosted openings cannot use the free task's placement offset or its slab correction.
             ElementId originalId = instance.Id;
@@ -159,14 +185,14 @@ namespace GloryHoleRefreshElevations
                     bool slab = RebindLevelRules.IsSlab(profile);
                     if (slab ? !(instance.Host is Floor) : !(instance.Host is Wall))
                         throw new SkipException("Основа не соответствует семейству отверстия");
-                    if (instance.Pinned) throw new SkipException("Элемент закреплён");
                     if (!instance.GroupId.Equals(ElementId.InvalidElementId))
                         throw new SkipException("Элемент входит в группу");
                     if (instance.SuperComponent != null) throw new SkipException("Вложенное семейство");
                     if (!(instance.Location is LocationPoint)) throw new SkipException("Нет точки вставки");
 
                     var nativeLevel = instance.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM);
-                    RequireWritable(nativeLevel, StorageType.ElementId, "Уровень");
+                    if (nativeLevel == null || nativeLevel.StorageType != StorageType.ElementId)
+                        throw new SkipException("Отсутствует параметр уровня размещения отверстия");
                     var oldLevel = doc.GetElement(nativeLevel.AsElementId()) as Level;
                     if (oldLevel != null ? !oldLevel.Id.Equals(instance.LevelId)
                         : !instance.LevelId.Equals(ElementId.InvalidElementId))
@@ -174,17 +200,29 @@ namespace GloryHoleRefreshElevations
                     OpeningElevationService.ValidateParameters(instance);
                     var before = PlacementSnapshot.Capture(instance);
                     var relations = OpeningRelationsSnapshot.Capture(instance);
-                    Level? target = manualLevel;
-                    if (target == null)
-                    {
-                        var resolution = RebindLevelRules.Resolve(levels, profile, before.Point.Z);
-                        if (resolution.Status != LevelResolutionStatus.Resolved)
-                            throw new SkipException(ResolutionReason(resolution.Status));
-                        target = doc.GetElement(resolution.Level.UniqueId) as Level;
-                    }
-                    if (target == null) throw new SkipException("Уровень недоступен");
                     bool changed = oldLevel == null || !oldLevel.Id.Equals(target.Id);
-                    if (changed)
+                    bool recreate = changed && nativeLevel.IsReadOnly;
+                    if (changed && instance.Pinned && !recreate) throw new SkipException("Элемент закреплён");
+                    var metadata = changed ? captureMetadata(instance) : null;
+                    OpeningReplacementSnapshot? replacement = null;
+                    if (recreate)
+                    {
+                        relations.RequireCut();
+                        replacement = OpeningReplacementSnapshot.Capture(instance);
+                        RunTransaction(doc, "Пересоздать отверстие на выбранном уровне", () =>
+                        {
+                            instance = replacement.Replace(target);
+                            doc.Regenerate();
+                            relations.Restore(instance);
+                            replacement.RestorePin(instance);
+                            doc.Regenerate();
+                            VerifyOpening(instance, target, before, relations, false, false, true);
+                            replacement.Verify(instance);
+                        });
+                        VerifyOpening(instance, target, before, relations, false, false, true);
+                        replacement.Verify(instance);
+                    }
+                    else if (changed)
                     {
                         var offset = instance.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM);
                         bool canCompensate = offset != null && offset.StorageType == StorageType.Double
@@ -210,20 +248,34 @@ namespace GloryHoleRefreshElevations
                         VerifyOpening(instance, target, before, relations, false, false);
                     }
 
-                    bool allowZ = roundHeight && !slab;
                     RunTransaction(doc, "Обновить отметки отверстия", () =>
                     {
                         refresh(instance);
                         doc.Regenerate();
-                        VerifyOpening(instance, target, before, relations, allowZ, roundLocation);
+                        metadata?.Apply(instance);
+                        VerifyOpening(instance, target, before, relations, false, false, recreate);
+                        replacement?.Verify(instance);
                         OpeningElevationService.VerifyReports(instance, profile, target);
+                        metadata?.Verify(instance);
                     });
-                    VerifyOpening(instance, target, before, relations, allowZ, roundLocation);
+                    VerifyOpening(instance, target, before, relations, false, false, recreate);
+                    replacement?.Verify(instance);
                     OpeningElevationService.VerifyReports(instance, profile, target);
+                    metadata?.Verify(instance);
+                    var callback = metadata?.AfterCommit;
+                    var warning = metadata?.Warning;
                     if (item.Assimilate() != TransactionStatus.Committed)
                         throw new TransactionStateException("Не удалось сохранить перепривязку отверстия.");
                     if (changed) report.Changed++; else report.Unchanged++;
                     if (oldLevel == null) report.Restored++;
+                    if (recreate)
+                    {
+                        report.Recreated++;
+                        report.ReplacementIds.Add(instance.Id);
+                        completedDetails.Add("Пересоздано отверстие: ID " + originalId + " → " + instance.Id + " · " + originalName);
+                    }
+                    if (!string.IsNullOrWhiteSpace(warning)) completedDetails.Add("ID " + instance.Id + ": " + warning);
+                    if (callback != null) afterCommit.Add(callback);
                 }
                 catch (Autodesk.Revit.Exceptions.RegenerationFailedException) { throw; }
                 catch (TransactionStateException) { throw; }
@@ -240,13 +292,13 @@ namespace GloryHoleRefreshElevations
             => element.Category?.Id.Equals(new ElementId(category)) == true;
 
         private static void VerifyOpening(FamilyInstance instance, Level target, PlacementSnapshot before,
-            OpeningRelationsSnapshot relations, bool allowZ, bool allowXY)
+            OpeningRelationsSnapshot relations, bool allowZ, bool allowXY, bool replacement = false)
         {
             if (!instance.IsValidObject) throw new SkipException("Отверстие удалено при обработке Revit");
             if (!instance.LevelId.Equals(target.Id)
                 || !instance.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM).AsElementId().Equals(target.Id))
                 throw new SkipException("Revit не сохранил уровень размещения отверстия");
-            before.Verify(instance, allowZ, allowXY);
+            before.Verify(instance, allowZ, allowXY, replacement);
             relations.Verify(instance);
         }
 
@@ -524,6 +576,8 @@ namespace GloryHoleRefreshElevations
             private bool inserted, pinned;
             private HashSet<string> joins = new HashSet<string>(StringComparer.Ordinal);
             private HashSet<string> voidCuts = new HashSet<string>(StringComparer.Ordinal);
+            private List<Tuple<ElementId, bool>> joinElements = new List<Tuple<ElementId, bool>>();
+            private List<ElementId> cutElements = new List<ElementId>();
 
             public static OpeningRelationsSnapshot Capture(FamilyInstance instance)
             {
@@ -547,6 +601,7 @@ namespace GloryHoleRefreshElevations
                     var other = doc.GetElement(id);
                     if (other == null) throw new SkipException("Связанный с отверстием элемент недоступен");
                     result.joins.Add(other.UniqueId + ":" + JoinGeometryUtils.IsCuttingElementInJoin(doc, instance, other));
+                    result.joinElements.Add(Tuple.Create(id, JoinGeometryUtils.IsCuttingElementInJoin(doc, instance, other)));
                 }
                 // Native window/host cuts are represented by the host insertion. Unattached
                 // void cuts are additional relationships, not a universal test for an opening.
@@ -556,8 +611,34 @@ namespace GloryHoleRefreshElevations
                         var other = doc.GetElement(id);
                         if (other == null) throw new SkipException("Вырезаемый элемент недоступен");
                         result.voidCuts.Add(other.UniqueId);
+                        result.cutElements.Add(id);
                     }
                 return result;
+            }
+
+            public void RequireCut()
+            {
+                if (!inserted && !voidCuts.Contains(hostId))
+                    throw new SkipException("Не подтверждено вырезание исходного отверстия в основе");
+            }
+
+            public void Restore(FamilyInstance instance)
+            {
+                var doc = instance.Document;
+                foreach (var id in cutElements)
+                {
+                    var other = doc.GetElement(id) ?? throw new SkipException("Вырезаемый элемент недоступен после пересоздания");
+                    if (!InstanceVoidCutUtils.InstanceVoidCutExists(other, instance))
+                        InstanceVoidCutUtils.AddInstanceVoidCut(doc, other, instance);
+                }
+                foreach (var pair in joinElements)
+                {
+                    var other = doc.GetElement(pair.Item1) ?? throw new SkipException("Соединённый элемент недоступен после пересоздания");
+                    if (!JoinGeometryUtils.AreElementsJoined(doc, instance, other))
+                        JoinGeometryUtils.JoinGeometry(doc, instance, other);
+                    if (JoinGeometryUtils.IsCuttingElementInJoin(doc, instance, other) != pair.Item2)
+                        JoinGeometryUtils.SwitchJoinOrder(doc, instance, other);
+                }
             }
 
             public void Verify(FamilyInstance instance)
@@ -599,11 +680,11 @@ namespace GloryHoleRefreshElevations
                 };
             }
 
-            public void Verify(FamilyInstance instance, bool allowZ, bool allowXY)
+            public void Verify(FamilyInstance instance, bool allowZ, bool allowXY, bool replacement = false)
             {
                 var now = Capture(instance);
                 XYZ move = now.Point - Point;
-                bool same = uniqueId == now.uniqueId && typeId.Equals(now.typeId)
+                bool same = (replacement || uniqueId == now.uniqueId) && typeId.Equals(now.typeId)
                     && guid == now.guid && mirrored == now.mirrored
                     && handFlipped == now.handFlipped && facingFlipped == now.facingFlipped
                     && Near(transform.BasisX, now.transform.BasisX)

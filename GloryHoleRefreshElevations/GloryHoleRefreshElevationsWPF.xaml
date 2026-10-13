@@ -230,7 +230,7 @@
                           Unchecked="RebindToLevels_Changed"/>
                 <WrapPanel Margin="24,4,0,0">
                     <RadioButton x:Name="rbt_RebindAutomatically"
-                                 Content="Автоматически" GroupName="RebindMode"
+                                 Content="Автоматически (задания)" GroupName="RebindMode"
                                  MinHeight="28" Margin="0,0,16,0"
                                  IsChecked="True" IsEnabled="False"
                                  Checked="RebindMode_Checked"/>
@@ -252,7 +252,7 @@
                               AutomationProperties.Name="Уровень для перепривязки"/>
                 </Grid>
                 <TextBlock x:Name="textBlock_RebindWarning" Visibility="Collapsed"
-                           Text="После перепривязки проверьте привязку к уровням."
+                           Text="Для готовых отверстий выберите «В выбранных элементах» и «К выбранному уровню». Если уровень недоступен для записи, отверстие будет пересоздано. Положение сохраняется, округление не применяется."
                            TextWrapping="Wrap" Margin="24,8,0,0"
                            Foreground="{DynamicResource SubtleTextBrush}"/>
             </StackPanel>

@@ -6,6 +6,7 @@ using Xunit;
 
 namespace GloryHoleRefreshElevations.Tests
 {
+    [Collection("Revit service boundary")]
     public sealed class LevelRebindingServiceTests
     {
         private static readonly Guid FamilyCode = new Guid("40bbbf16-4b6a-45e8-9896-620bb448db96");
@@ -60,7 +61,6 @@ namespace GloryHoleRefreshElevations.Tests
         }
 
         [Theory]
-        [InlineData("readonly")]
         [InlineData("missing-host")]
         [InlineData("pinned")]
         [InlineData("rejected-level-set")]
@@ -224,7 +224,7 @@ namespace GloryHoleRefreshElevations.Tests
         }
 
         [Fact]
-        public void AutomaticFinishedSlabSelectionUsesActualPointWithoutTaskDownwardAdjustment()
+        public void AutomaticFinishedSlabSelectionDoesNotChangeOpeningLevel()
         {
             var model = new Model();
             Level nearest = model.Document.Add(new Level { Name = "Nearest", ProjectElevation = 10.2, Elevation = 110.2 });
@@ -234,11 +234,11 @@ namespace GloryHoleRefreshElevations.Tests
             var report = model.RunAutomatic(item);
 
             Assert.Null(report.Failure);
-            Assert.Equal(1, report.Changed);
-            Assert.Empty(report.SkippedIds);
-            Assert.Equal(nearest.Id, item.LevelId);
+            Assert.Equal(0, report.Changed);
+            Assert.Equal(item.Id, Assert.Single(report.SkippedIds));
+            Assert.Equal(model.Original.Id, item.LevelId);
             Assert.Equal(10.12, ((LocationPoint)item.Location).Point.Z, 8);
-            Assert.Equal(-0.08, item.get_Parameter(ReportOffset).AsDouble(), 8);
+            Assert.Equal(15, item.get_Parameter(ReportOffset).AsDouble(), 8);
         }
 
         [Fact]
@@ -305,7 +305,7 @@ namespace GloryHoleRefreshElevations.Tests
             Assert.True(UpdaterRegistry.Enabled);
         }
 
-        private sealed class Model
+        internal sealed class Model
         {
             internal Document Document { get; } = new Document();
             internal Level Original { get; }

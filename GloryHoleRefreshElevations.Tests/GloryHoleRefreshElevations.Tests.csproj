@@ -19,6 +19,9 @@
     <Compile Include="..\GloryHoleRefreshElevations\RevitUpdaterState.cs" Link="Production\RevitUpdaterState.cs" />
     <Compile Include="..\GloryHoleRefreshElevations\OpeningRebindingRules.cs" Link="Production\OpeningRebindingRules.cs" Condition="Exists('..\GloryHoleRefreshElevations\OpeningRebindingRules.cs')" />
     <Compile Include="..\GloryHoleRefreshElevations\OpeningElevationService.cs" Link="Production\OpeningElevationService.cs" Condition="Exists('..\GloryHoleRefreshElevations\OpeningElevationService.cs')" />
+    <Compile Include="..\GloryHoleRefreshElevations\OpeningRecreationUiPolicy.cs" Link="Production\OpeningRecreationUiPolicy.cs" />
+    <Compile Include="..\GloryHoleRefreshElevations\OpeningReplacementMetadata.cs" Link="Production\OpeningReplacementMetadata.cs" />
+    <Compile Include="..\GloryHoleRefreshElevations\OpeningReplacementSnapshot.cs" Link="Production\OpeningReplacementSnapshot.cs" />
   </ItemGroup>
   <ItemGroup><Compile Include="..\GloryHoleRefreshElevations\OpeningRefreshRules.cs" Link="Production\OpeningRefreshRules.cs" /></ItemGroup>
 </Project>

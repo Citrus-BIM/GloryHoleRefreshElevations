@@ -94,6 +94,10 @@ namespace GloryHoleRefreshElevations
 
             string roundHolesLocationButtonName = gloryHoleRefreshElevationsWPF.RoundHolesLocationButtonName;
             double roundHoleLocationIncrement = gloryHoleRefreshElevationsWPF.RoundHoleLocationIncrement;
+            bool rebind = gloryHoleRefreshElevationsWPF.RebindToLevels;
+            bool selectedOnly = refreshElevationsOptionButtonName == "rbt_SelectedItems";
+            bool manual = gloryHoleRefreshElevationsWPF.RebindToSelectedLevel;
+            string targetLevelId = gloryHoleRefreshElevationsWPF.SelectedRebindLevelUniqueId;
 
             List<FamilyInstance> intersectionPointFamilyInstanceList = null;
             List<FamilyInstance> intersectionPointWeandrevitList = null;
@@ -131,25 +135,27 @@ namespace GloryHoleRefreshElevations
             else
             {
                 HolesSelectionFilter holesSelectionFilter = new HolesSelectionFilter();
-                IList<Reference> selHoles = null;
-
-                try
+                var preselected = sel.GetElementIds().Select(id => doc.GetElement(id)).ToList();
+                var selectedInstances = preselected.Where(element => element != null && holesSelectionFilter.AllowElement(element))
+                    .OfType<FamilyInstance>().ToList();
+                if (!OpeningRecreationUiPolicy.CanUsePreselection(preselected.Count, selectedInstances.Count))
                 {
-                    selHoles = sel.PickObjects(ObjectType.Element, holesSelectionFilter, "Выберите отверстия!");
-                }
-                catch (Autodesk.Revit.Exceptions.OperationCanceledException)
-                {
-                    return Result.Cancelled;
+                    try
+                    {
+                        selectedInstances = sel.PickObjects(ObjectType.Element, holesSelectionFilter, "Выберите задания и отверстия.")
+                            .Select(reference => doc.GetElement(reference)).OfType<FamilyInstance>().ToList();
+                    }
+                    catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+                    {
+                        return Result.Cancelled;
+                    }
                 }
 
                 intersectionPointFamilyInstanceList = new List<FamilyInstance>();
                 intersectionPointWeandrevitList = new List<FamilyInstance>();
 
-                foreach (Reference roomRef in selHoles)
+                foreach (FamilyInstance fi in selectedInstances)
                 {
-                    var fi = doc.GetElement(roomRef) as FamilyInstance;
-                    if (fi == null) continue;
-
                     if (IsCategory(fi, BuiltInCategory.OST_GenericModel))
                         intersectionPointFamilyInstanceList.Add(fi);
                     else if (IsCategory(fi, BuiltInCategory.OST_Windows))
@@ -159,22 +165,27 @@ namespace GloryHoleRefreshElevations
 
             Action<FamilyInstance> refresh = instance =>
             {
+                bool opening = LevelRebindingService.IsFinishedOpening(instance);
+                if (opening && rebind && !OpeningRecreationUiPolicy.CanRecreate(rebind, selectedOnly, manual, targetLevelId))
+                    throw new InvalidOperationException("Для перепривязки готовых отверстий выберите элементы и целевой уровень.");
+                string heightMode = OpeningRecreationUiPolicy.ShouldRound(
+                    roundHolesPositionButtonName == "radioButton_RoundHolesPositionYes", opening, rebind)
+                    ? "radioButton_RoundHolesPositionYes" : "radioButton_RoundHolesPositionNo";
+                string locationMode = OpeningRecreationUiPolicy.ShouldRound(
+                    roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes", opening, rebind)
+                    ? "radioButton_RoundHolesLocationYes" : "radioButton_RoundHolesLocationNo";
                 if (IsCategory(instance, BuiltInCategory.OST_Windows))
-                    RefreshWeandrevit(instance, roundHolesPositionButtonName, roundHolePositionIncrement);
+                    RefreshWeandrevit(instance, heightMode, roundHolePositionIncrement);
                 else
                     RefreshIntersection(doc, instance, gridLines, preferHostMaxDistFt,
-                        roundHolesPositionButtonName, roundHolePositionIncrement,
-                        roundHolesLocationButtonName, roundHoleLocationIncrement);
+                        heightMode, roundHolePositionIncrement, locationMode, roundHoleLocationIncrement);
             };
             var report = LevelRebindingService.Execute(doc,
                 intersectionPointFamilyInstanceList.Concat(intersectionPointWeandrevitList),
-                gloryHoleRefreshElevationsWPF.RebindToLevels,
-                refreshElevationsOptionButtonName == "rbt_SelectedItems",
-                gloryHoleRefreshElevationsWPF.RebindToSelectedLevel,
-                gloryHoleRefreshElevationsWPF.SelectedRebindLevelUniqueId, refresh,
+                rebind, selectedOnly, manual, targetLevelId, refresh,
                 roundHolesPositionButtonName == "radioButton_RoundHolesPositionYes",
                 roundHolesLocationButtonName == "radioButton_RoundHolesLocationYes");
-            ShowReport(report, sel, gloryHoleRefreshElevationsWPF.RebindToLevels);
+            ShowReport(report, sel, rebind);
             return report.Failure == null ? Result.Succeeded : Result.Cancelled;
         }
 
@@ -262,7 +273,8 @@ namespace GloryHoleRefreshElevations
             if (content == null)
             {
                 content = rebind
-                    ? "Перепривязано: " + report.Changed + " (без исходного уровня: " + report.Restored + ").\n"
+                    ? "Перепривязано: " + report.Changed + " (из них пересоздано: " + report.Recreated
+                        + "; без исходного уровня: " + report.Restored + ").\n"
                         + "Уровень уже подходил: " + report.Unchanged + ".\n"
                     : "Обновлено: " + report.Refreshed + ".\n";
                 content += "Пропущено: " + report.SkippedIds.Count + ".";
