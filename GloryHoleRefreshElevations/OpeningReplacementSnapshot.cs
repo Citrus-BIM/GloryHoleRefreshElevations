@@ -48,7 +48,7 @@ namespace GloryHoleRefreshElevations
                 if (id.Equals(oldId)) continue;
                 var dependent = document.GetElement(id);
                 if (dependent?.Category?.CategoryType != CategoryType.Annotation)
-                    throw new InvalidOperationException("Пересоздание удалило бы зависимый модельный элемент ID " + id);
+                    throw OpeningReplacementException.Dependent(id, dependent);
                 allowedDeletion.Add(id);
             }
         }
@@ -193,12 +193,35 @@ namespace GloryHoleRefreshElevations
                     case StorageType.ElementId: parameter.Set((ElementId)value!); break;
                     default: throw new InvalidOperationException("Неподдерживаемый параметр: " + name);
                 }
-                Verify(target);
+                // Family constraints may not expose the final value until the whole parameter
+                // batch and placement changes regenerate. The caller verifies all captured
+                // values after regeneration and again after commit, within its rollback group.
             }
 
             internal void Verify(FamilyInstance target)
             {
-                if (!Matches(Get(target))) throw new InvalidOperationException("Изменился параметр отверстия: " + name);
+                var actual = Get(target);
+                if (!Matches(actual))
+                    throw new OpeningReplacementException("Изменился параметр отверстия: " + name,
+                        MismatchDetail(actual));
+            }
+
+            private string MismatchDetail(Parameter actual)
+            {
+                string identity = sharedId.HasValue ? "GUID " + sharedId.Value
+                    : "BuiltInParameter " + (nativeId ?? (definition as InternalDefinition)?.BuiltInParameter ?? BuiltInParameter.INVALID);
+                string units = storage == StorageType.Double ? " (внутренние единицы Revit)" : string.Empty;
+                return "После восстановления параметров и регенерации: «" + name + "», " + identity
+                    + "; ожидалось " + Format(value, hasValue) + ", получено " + Format(actual.HasValue ? Read(actual) : null, actual.HasValue)
+                    + units + ".";
+            }
+
+            private static string Format(object? value, bool hasValue)
+            {
+                if (!hasValue) return "<не задано>";
+                if (value is double number) return number.ToString("G17", System.Globalization.CultureInfo.InvariantCulture);
+                if (value is string text) return "«" + text + "»";
+                return Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "<null>";
             }
 
             private bool Matches(Parameter parameter)

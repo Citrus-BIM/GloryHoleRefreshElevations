@@ -19,11 +19,12 @@ namespace GloryHoleRefreshElevations
         public string? Failure { get; set; }
         public string? UpdaterRestoreFailure { get; set; }
 
-        public void Skip(ElementId id, string reason, string name)
+        public void Skip(ElementId id, string reason, string name, string? detail = null)
         {
             SkippedIds.Add(id);
             Reasons[reason] = Reasons.ContainsKey(reason) ? Reasons[reason] + 1 : 1;
-            Details.Add("ID " + id + " · " + name + ": " + reason);
+            Details.Add("ID " + id + " · " + name + ": " + reason
+                + (string.IsNullOrWhiteSpace(detail) ? "" : ". " + detail));
         }
     }
 
@@ -216,11 +217,11 @@ namespace GloryHoleRefreshElevations
                             relations.Restore(instance);
                             replacement.RestorePin(instance);
                             doc.Regenerate();
-                            VerifyOpening(instance, target, before, relations, false, false, true);
                             replacement.Verify(instance);
+                            VerifyOpening(instance, target, before, relations, false, false, true);
                         });
-                        VerifyOpening(instance, target, before, relations, false, false, true);
                         replacement.Verify(instance);
+                        VerifyOpening(instance, target, before, relations, false, false, true);
                     }
                     else if (changed)
                     {
@@ -253,13 +254,13 @@ namespace GloryHoleRefreshElevations
                         refresh(instance);
                         doc.Regenerate();
                         metadata?.Apply(instance);
-                        VerifyOpening(instance, target, before, relations, false, false, recreate);
                         replacement?.Verify(instance);
+                        VerifyOpening(instance, target, before, relations, false, false, recreate);
                         OpeningElevationService.VerifyReports(instance, profile, target);
                         metadata?.Verify(instance);
                     });
-                    VerifyOpening(instance, target, before, relations, false, false, recreate);
                     replacement?.Verify(instance);
+                    VerifyOpening(instance, target, before, relations, false, false, recreate);
                     OpeningElevationService.VerifyReports(instance, profile, target);
                     metadata?.Verify(instance);
                     var callback = metadata?.AfterCommit;
@@ -283,7 +284,7 @@ namespace GloryHoleRefreshElevations
                 {
                     if (item.GetStatus() != TransactionStatus.Started || item.RollBack() != TransactionStatus.RolledBack)
                         throw new TransactionStateException("Не удалось откатить отверстие: " + ex.Message);
-                    report.Skip(originalId, FriendlyReason(ex), originalName);
+                    report.Skip(originalId, FriendlyReason(ex), originalName, (ex as OpeningReplacementException)?.Detail);
                 }
             }
         }

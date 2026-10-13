@@ -13,6 +13,81 @@ namespace GloryHoleRefreshElevations.Tests
         private static readonly Guid GhGuid = new Guid("652cfdd0-f868-4433-8fbd-16a517e1b878");
         private static readonly Guid Custom = new Guid("e6fa7de9-eb9c-4adc-bd1a-f23d3cb3bd6f");
         private static readonly Guid ReportOffset = new Guid("515dc061-93ce-40e4-859a-e29224d80a10");
+        private static readonly Guid Height = new Guid("da753fe3-ecfa-465b-9a2c-02f55d0c2ff1");
+
+        [Fact]
+        public void LinkedHeightIsVerifiedAfterTheParameterBatchRegenerates()
+        {
+            var fixture = new Fixture();
+            fixture.Old.Put(Height, new Parameter(StorageType.Double, 9.0));
+            double? pendingHeight = null;
+            int regenerations = 0;
+            fixture.PrepareCreation(item =>
+            {
+                var height = item.get_Parameter(Height);
+                height.Value = 1.0;
+                height.AfterSet = value =>
+                {
+                    pendingHeight = (double)value;
+                    height.Value = 1.0; // A linked family value is not updated until regeneration.
+                };
+            });
+            fixture.Model.Document.OnRegenerate = () =>
+            {
+                regenerations++;
+                if (pendingHeight.HasValue)
+                    fixture.New.get_Parameter(Height).Value = pendingHeight.Value;
+            };
+
+            var report = fixture.Model.Run(fixture.Old);
+
+            Assert.Null(report.Failure);
+            Assert.Equal(1, report.Recreated);
+            Assert.Empty(report.SkippedIds);
+            Assert.True(regenerations > 0);
+            Assert.Equal(9, fixture.New.get_Parameter(Height).AsDouble());
+            Assert.Equal(7, fixture.New.get_Parameter(Width).AsDouble());
+            Assert.Equal("preserved-guid", fixture.New.get_Parameter(GhGuid).AsString());
+        }
+
+        [Fact]
+        public void RejectedHeightStillRestoresTheOriginalAfterRegeneration()
+        {
+            var fixture = new Fixture();
+            fixture.Old.Put(Height, new Parameter(StorageType.Double, 9.0));
+            bool regenerated = false;
+            fixture.PrepareCreation(item =>
+            {
+                var height = item.get_Parameter(Height);
+                height.Value = 1.0;
+                height.RejectSet = true;
+            });
+            fixture.Model.Document.OnRegenerate = () => regenerated = true;
+
+            var report = fixture.Model.Run(fixture.Old);
+
+            AssertRestored(fixture, report);
+            Assert.True(regenerated);
+            Assert.Equal(9, fixture.Old.get_Parameter(Height).AsDouble());
+            Assert.False(fixture.New.IsValidObject);
+            Assert.Contains(report.Details, text => text.Contains(Height.ToString())
+                && text.Contains("ожидалось 9") && text.Contains("получено 1") && text.Contains("внутренние единицы"));
+        }
+
+        [Fact]
+        public void RejectedUserParameterIncludesExpectedActualAndIdentityWithoutSplittingReasonGroups()
+        {
+            var fixture = new Fixture();
+            fixture.Old.get_Parameter(Custom).Definition.Name = "User note";
+            fixture.PrepareCreation(item => item.get_Parameter(Custom).RejectSet = true);
+
+            var report = fixture.Model.Run(fixture.Old);
+
+            AssertRestored(fixture, report);
+            Assert.Equal("Изменился параметр отверстия: User note", Assert.Single(report.Reasons).Key);
+            Assert.Contains(report.Details, text => text.Contains(Custom.ToString())
+                && text.Contains("approval text") && text.Contains("ожидалось") && text.Contains("получено"));
+        }
 
         [Fact]
         public void FloorKeepsHostRelativeOffsetWhenConstructorResetsIt()

@@ -83,7 +83,7 @@ namespace Autodesk.Revit.DB
     }
     public sealed class LocationCurve : Location { }
     public enum CategoryType { Model, Annotation, Internal, AnalyticalModel }
-    public sealed class Category { public ElementId Id { get; set; } public CategoryType CategoryType { get; set; } }
+    public sealed class Category { public ElementId Id { get; set; } public string Name { get; set; } public CategoryType CategoryType { get; set; } }
     public sealed class Line
     {
         public XYZ Start, End;

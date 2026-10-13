@@ -22,6 +22,7 @@
     <Compile Include="..\GloryHoleRefreshElevations\OpeningRecreationUiPolicy.cs" Link="Production\OpeningRecreationUiPolicy.cs" />
     <Compile Include="..\GloryHoleRefreshElevations\OpeningReplacementMetadata.cs" Link="Production\OpeningReplacementMetadata.cs" />
     <Compile Include="..\GloryHoleRefreshElevations\OpeningReplacementSnapshot.cs" Link="Production\OpeningReplacementSnapshot.cs" />
+    <Compile Include="..\GloryHoleRefreshElevations\OpeningReplacementException.cs" Link="Production\OpeningReplacementException.cs" />
   </ItemGroup>
   <ItemGroup><Compile Include="..\GloryHoleRefreshElevations\OpeningRefreshRules.cs" Link="Production\OpeningRefreshRules.cs" /></ItemGroup>
 </Project>
