@@ -3,15 +3,22 @@
     <TargetFramework>net8.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
-    <LangVersion>7.3</LangVersion>
-    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <Nullable>annotations</Nullable>
+    <UseWPF>false</UseWPF>
+    <UseWindowsForms>false</UseWindowsForms>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Remove="Revit_All_Main_Versions_API_x64" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />
     <Compile Include="..\GloryHoleRefreshElevations\RebindLevelRules.cs" Link="RebindLevelRules.cs" />
     <Compile Include="..\GloryHoleRefreshElevations\UpdaterSuspension.cs" Link="UpdaterSuspension.cs" />
+    <Compile Include="..\GloryHoleRefreshElevations\LevelRebindingService.cs" Link="Production\LevelRebindingService.cs" />
+    <Compile Include="..\GloryHoleRefreshElevations\RevitUpdaterState.cs" Link="Production\RevitUpdaterState.cs" />
+    <Compile Include="..\GloryHoleRefreshElevations\OpeningRebindingRules.cs" Link="Production\OpeningRebindingRules.cs" Condition="Exists('..\GloryHoleRefreshElevations\OpeningRebindingRules.cs')" />
+    <Compile Include="..\GloryHoleRefreshElevations\OpeningElevationService.cs" Link="Production\OpeningElevationService.cs" Condition="Exists('..\GloryHoleRefreshElevations\OpeningElevationService.cs')" />
   </ItemGroup>
   <ItemGroup><Compile Include="..\GloryHoleRefreshElevations\OpeningRefreshRules.cs" Link="Production\OpeningRefreshRules.cs" /></ItemGroup>
 </Project>

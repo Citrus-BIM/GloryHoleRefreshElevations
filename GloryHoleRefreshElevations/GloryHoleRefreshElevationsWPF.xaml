@@ -220,7 +220,7 @@
                    IsEnabled="False"/>
         </Grid>
 
-        <GroupBox Grid.Row="5" Header="Привязка болванок:" Margin="0,0,0,8">
+        <GroupBox Grid.Row="5" Header="Привязка заданий и отверстий:" Margin="0,0,0,8">
             <StackPanel Margin="8,2,8,8">
                 <CheckBox x:Name="checkBox_RebindToLevels"
                           Content="Перепривязать к уровням"

@@ -38,6 +38,12 @@ namespace GloryHoleRefreshElevations
             new Guid("293f055d-6939-4611-87b7-9a50d0c1f50e"),
             new Guid("9b679ab7-ea2e-49ce-90ab-0549d5aa36ff")
         };
+        private static readonly BuiltInParameter[] NativeDimensionIds =
+        {
+            BuiltInParameter.FAMILY_WIDTH_PARAM, BuiltInParameter.FAMILY_HEIGHT_PARAM,
+            BuiltInParameter.WINDOW_WIDTH, BuiltInParameter.WINDOW_HEIGHT,
+            BuiltInParameter.CASEWORK_WIDTH, BuiltInParameter.CASEWORK_HEIGHT
+        };
 
         public static IReadOnlyList<RebindLevel> CollectLevels(Document doc)
         {
@@ -72,7 +78,10 @@ namespace GloryHoleRefreshElevations
                     RequireStarted(operation.Start());
                     foreach (var instance in instances.GroupBy(i => i.Id).Select(g => g.First()))
                     {
-                        if (rebind && !IsFinishedOpening(instance))
+                        if (rebind && IsFinishedOpening(instance))
+                            ProcessOpening(doc, instance, levels, manualLevel, refresh,
+                                roundHeight, roundLocation, report);
+                        else if (rebind)
                             ProcessInstance(doc, instance, levels, manualLevel, refresh,
                                 roundHeight, roundLocation, report);
                         else
@@ -123,25 +132,122 @@ namespace GloryHoleRefreshElevations
             }
         }
 
-        private static bool IsFinishedOpening(FamilyInstance instance)
+        internal static bool IsFinishedOpening(FamilyInstance instance)
         {
-            // These participate in the existing refresh, but do not use the free task placement model.
-            string code = instance.Symbol.get_Parameter(FamilyCode)?.AsString() ?? string.Empty;
-            if (code == "126" || code == "221" || code == "222" || code == "223" || code == "224")
-                return true;
-            switch (instance.Symbol.Family.Name)
+            return OpeningRebindingRules.IsOpening(instance.Symbol.get_Parameter(FamilyCode)?.AsString() ?? string.Empty,
+                instance.Symbol.Family.Name);
+        }
+
+        private static void ProcessOpening(Document doc, FamilyInstance instance,
+            IReadOnlyList<RebindLevel> levels, Level? manualLevel, Action<FamilyInstance> refresh,
+            bool roundHeight, bool roundLocation, RebindReport report)
+        {
+            // Hosted openings cannot use the free task's placement offset or its slab correction.
+            ElementId originalId = instance.Id;
+            string originalName = instance.Name;
+            using (var item = new TransactionGroup(doc, "Перепривязка отверстия"))
             {
-                case "Отверстие_Стена_Прямоугольное":
-                case "Отверстие_Стена_Круглое":
-                case "Отверстие_Плита_Прямоугольное":
-                case "Отверстие_Плита_Круглое":
-                case "Гильза_Стена":
-                case "Гильза_Плита":
-                case "231_Отверстие прямоугольное (Окно_Стена)":
-                case "231_Отверстие круглое с гильзой в стене (Окно_Стена)":
-                    return true;
-                default: return false;
+                RequireStarted(item.Start());
+                try
+                {
+                    var profile = OpeningElevationService.GetProfile(instance);
+                    if (profile == RebindTaskProfile.Unsupported
+                        || !(IsCategory(instance, BuiltInCategory.OST_GenericModel)
+                            || IsCategory(instance, BuiltInCategory.OST_Windows)))
+                        throw new SkipException("Неподдерживаемое или противоречивое семейство отверстия");
+                    OpeningRefreshRules.RequireHost(instance.Host != null);
+                    bool slab = RebindLevelRules.IsSlab(profile);
+                    if (slab ? !(instance.Host is Floor) : !(instance.Host is Wall))
+                        throw new SkipException("Основа не соответствует семейству отверстия");
+                    if (instance.Pinned) throw new SkipException("Элемент закреплён");
+                    if (!instance.GroupId.Equals(ElementId.InvalidElementId))
+                        throw new SkipException("Элемент входит в группу");
+                    if (instance.SuperComponent != null) throw new SkipException("Вложенное семейство");
+                    if (!(instance.Location is LocationPoint)) throw new SkipException("Нет точки вставки");
+
+                    var nativeLevel = instance.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM);
+                    RequireWritable(nativeLevel, StorageType.ElementId, "Уровень");
+                    var oldLevel = doc.GetElement(nativeLevel.AsElementId()) as Level;
+                    if (oldLevel != null ? !oldLevel.Id.Equals(instance.LevelId)
+                        : !instance.LevelId.Equals(ElementId.InvalidElementId))
+                        throw new SkipException("Параметры исходного уровня противоречат друг другу");
+                    OpeningElevationService.ValidateParameters(instance);
+                    var before = PlacementSnapshot.Capture(instance);
+                    var relations = OpeningRelationsSnapshot.Capture(instance);
+                    Level? target = manualLevel;
+                    if (target == null)
+                    {
+                        var resolution = RebindLevelRules.Resolve(levels, profile, before.Point.Z);
+                        if (resolution.Status != LevelResolutionStatus.Resolved)
+                            throw new SkipException(ResolutionReason(resolution.Status));
+                        target = doc.GetElement(resolution.Level.UniqueId) as Level;
+                    }
+                    if (target == null) throw new SkipException("Уровень недоступен");
+                    bool changed = oldLevel == null || !oldLevel.Id.Equals(target.Id);
+                    if (changed)
+                    {
+                        var offset = instance.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM);
+                        bool canCompensate = offset != null && offset.StorageType == StorageType.Double
+                            && !offset.IsReadOnly && (oldLevel == null
+                                || Near(oldLevel.ProjectElevation + offset.AsDouble(), before.Point.Z));
+                        RunTransaction(doc, "Перепривязать отверстие к уровню", () =>
+                        {
+                            if (!nativeLevel.Set(target.Id) && !nativeLevel.AsElementId().Equals(target.Id))
+                                throw new SkipException("Revit отклонил изменение уровня");
+                            // Set both values before regeneration: the intermediate position may be outside the host.
+                            // FREE_HOST_OFFSET is host-relative and is never substituted for a level-relative offset.
+                            if (canCompensate)
+                            {
+                                var compensation = instance.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM);
+                                RequireWritable(compensation, StorageType.Double, "Отметка от уровня");
+                                double expected = RebindLevelRules.NativeOffsetForPosition(before.Point.Z, target.ProjectElevation);
+                                if (!compensation.Set(expected) && !Near(compensation.AsDouble(), expected))
+                                    throw new SkipException("Revit отклонил изменение смещения");
+                            }
+                            doc.Regenerate();
+                            VerifyOpening(instance, target, before, relations, false, false);
+                        });
+                        VerifyOpening(instance, target, before, relations, false, false);
+                    }
+
+                    bool allowZ = roundHeight && !slab;
+                    RunTransaction(doc, "Обновить отметки отверстия", () =>
+                    {
+                        refresh(instance);
+                        doc.Regenerate();
+                        VerifyOpening(instance, target, before, relations, allowZ, roundLocation);
+                        OpeningElevationService.VerifyReports(instance, profile, target);
+                    });
+                    VerifyOpening(instance, target, before, relations, allowZ, roundLocation);
+                    OpeningElevationService.VerifyReports(instance, profile, target);
+                    if (item.Assimilate() != TransactionStatus.Committed)
+                        throw new TransactionStateException("Не удалось сохранить перепривязку отверстия.");
+                    if (changed) report.Changed++; else report.Unchanged++;
+                    if (oldLevel == null) report.Restored++;
+                }
+                catch (Autodesk.Revit.Exceptions.RegenerationFailedException) { throw; }
+                catch (TransactionStateException) { throw; }
+                catch (Exception ex)
+                {
+                    if (item.GetStatus() != TransactionStatus.Started || item.RollBack() != TransactionStatus.RolledBack)
+                        throw new TransactionStateException("Не удалось откатить отверстие: " + ex.Message);
+                    report.Skip(originalId, FriendlyReason(ex), originalName);
+                }
             }
+        }
+
+        private static bool IsCategory(Element element, BuiltInCategory category)
+            => element.Category?.Id.Equals(new ElementId(category)) == true;
+
+        private static void VerifyOpening(FamilyInstance instance, Level target, PlacementSnapshot before,
+            OpeningRelationsSnapshot relations, bool allowZ, bool allowXY)
+        {
+            if (!instance.IsValidObject) throw new SkipException("Отверстие удалено при обработке Revit");
+            if (!instance.LevelId.Equals(target.Id)
+                || !instance.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM).AsElementId().Equals(target.Id))
+                throw new SkipException("Revit не сохранил уровень размещения отверстия");
+            before.Verify(instance, allowZ, allowXY);
+            relations.Verify(instance);
         }
 
         private static void ProcessInstance(Document doc, FamilyInstance instance,
@@ -328,9 +434,9 @@ namespace GloryHoleRefreshElevations
             switch (status)
             {
                 case LevelResolutionStatus.NoLevels: return "В проекте нет уровней";
-                case LevelResolutionStatus.NoLevelBelow: return "Нет уровня ниже болванки";
+                case LevelResolutionStatus.NoLevelBelow: return "Нет уровня ниже элемента";
                 case LevelResolutionStatus.Ambiguous: return "Неоднозначный выбор уровня";
-                default: return "Некорректная высота болванки";
+                default: return "Некорректная высота элемента";
             }
         }
 
@@ -409,6 +515,63 @@ namespace GloryHoleRefreshElevations
             return Near(a.X, b.X) && Near(a.Y, b.Y) && Near(a.Z, b.Z);
         }
 
+        private sealed class OpeningRelationsSnapshot
+        {
+            private string hostId = string.Empty;
+            private string? hostFace;
+            private ElementId hostLevel = ElementId.InvalidElementId;
+            private double? floorOffset;
+            private bool inserted, pinned;
+            private HashSet<string> joins = new HashSet<string>(StringComparer.Ordinal);
+            private HashSet<string> voidCuts = new HashSet<string>(StringComparer.Ordinal);
+
+            public static OpeningRelationsSnapshot Capture(FamilyInstance instance)
+            {
+                var doc = instance.Document;
+                var host = instance.Host as HostObject;
+                if (host == null || !host.IsValidObject)
+                    throw new SkipException("Основа отверстия недоступна");
+                var result = new OpeningRelationsSnapshot
+                {
+                    hostId = host.UniqueId,
+                    hostLevel = host.LevelId,
+                    hostFace = instance.HostFace?.ConvertToStableRepresentation(doc),
+                    inserted = host.FindInserts(false, false, false, false).Contains(instance.Id),
+                    pinned = instance.Pinned
+                };
+                var hostOffset = host.get_Parameter(BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM);
+                if (hostOffset != null && hostOffset.StorageType == StorageType.Double)
+                    result.floorOffset = hostOffset.AsDouble();
+                foreach (var id in JoinGeometryUtils.GetJoinedElements(doc, instance))
+                {
+                    var other = doc.GetElement(id);
+                    if (other == null) throw new SkipException("Связанный с отверстием элемент недоступен");
+                    result.joins.Add(other.UniqueId + ":" + JoinGeometryUtils.IsCuttingElementInJoin(doc, instance, other));
+                }
+                // Native window/host cuts are represented by the host insertion. Unattached
+                // void cuts are additional relationships, not a universal test for an opening.
+                if (InstanceVoidCutUtils.IsVoidInstanceCuttingElement(instance))
+                    foreach (var id in InstanceVoidCutUtils.GetElementsBeingCut(instance))
+                    {
+                        var other = doc.GetElement(id);
+                        if (other == null) throw new SkipException("Вырезаемый элемент недоступен");
+                        result.voidCuts.Add(other.UniqueId);
+                    }
+                return result;
+            }
+
+            public void Verify(FamilyInstance instance)
+            {
+                var now = Capture(instance);
+                if (hostId != now.hostId || !hostLevel.Equals(now.hostLevel) || hostFace != now.hostFace
+                    || inserted != now.inserted || pinned != now.pinned
+                    || floorOffset.HasValue != now.floorOffset.HasValue
+                    || (floorOffset.HasValue && !Near(floorOffset.Value, now.floorOffset.GetValueOrDefault()))
+                    || !joins.SetEquals(now.joins) || !voidCuts.SetEquals(now.voidCuts))
+                    throw new SkipException("Изменились основа отверстия или связи вырезания и соединения");
+            }
+        }
+
         private sealed class PlacementSnapshot
         {
             public XYZ Point { get; private set; } = XYZ.Zero;
@@ -421,6 +584,7 @@ namespace GloryHoleRefreshElevations
 
             public static PlacementSnapshot Capture(FamilyInstance instance)
             {
+                if (!instance.IsValidObject) throw new SkipException("Элемент удалён при обработке Revit");
                 return new PlacementSnapshot
                 {
                     Point = ((LocationPoint)instance.Location).Point,
@@ -451,7 +615,7 @@ namespace GloryHoleRefreshElevations
                 for (int i = 0; i < dimensions.Length; i++)
                     same &= dimensions[i].HasValue == now.dimensions[i].HasValue
                         && (!dimensions[i].HasValue || Near(dimensions[i].GetValueOrDefault(), now.dimensions[i].GetValueOrDefault()));
-                if (!same) throw new SkipException("Изменились положение, размеры или идентификатор болванки");
+                if (!same) throw new SkipException("Изменились положение, размеры или идентификатор элемента");
             }
 
             private static double?[] Dimensions(FamilyInstance instance)
@@ -460,6 +624,8 @@ namespace GloryHoleRefreshElevations
                 // helpers may change their extent when the reference level changes.
                 return DimensionIds.SelectMany(id => new[]
                     { instance.get_Parameter(id), instance.Symbol.get_Parameter(id) })
+                    .Concat(NativeDimensionIds.SelectMany(id => new[]
+                        { instance.get_Parameter(id), instance.Symbol.get_Parameter(id) }))
                     .Select(p => p != null && p.StorageType == StorageType.Double ? (double?)p.AsDouble() : null)
                     .ToArray();
             }

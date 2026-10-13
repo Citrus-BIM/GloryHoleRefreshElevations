@@ -29,12 +29,12 @@ namespace GloryHoleRefreshElevations
         {
             "111", "112", "113", "114", "115", "116",  // Отверстия в стенах
             "121", "122", "123", "124",  // Отверстия в плитах
-            "221", "222", "223", "224"   // Оконные отверстия в плитах
+            "126", "221", "222", "223", "224"   // Готовые отверстия
         };
 
         public bool AllowElement(Element elem)
         {
-            if (elem is FamilyInstance familyInstance)
+            if (elem is FamilyInstance familyInstance && IsCategory(elem, BuiltInCategory.OST_GenericModel))
             {
                 string familyName = familyInstance.Symbol.FamilyName;
                 string familyCode = familyInstance.Symbol.get_Parameter(gh_FamilyCode)?.AsString();
@@ -57,8 +57,7 @@ namespace GloryHoleRefreshElevations
             {
                 string familyName = windowInstance.Symbol.FamilyName;
 
-                if (familyName == "231_Отверстие прямоугольное (Окно_Стена)" ||
-                    familyName == "231_Отверстие круглое с гильзой в стене (Окно_Стена)")
+                if (OpeningRebindingRules.IsWindowFamily(familyName))
                 {
                     return true;
                 }
