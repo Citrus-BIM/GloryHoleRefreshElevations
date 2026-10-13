@@ -48,6 +48,10 @@ namespace GloryHoleRefreshElevations
             BuiltInParameter.CASEWORK_WIDTH, BuiltInParameter.CASEWORK_HEIGHT
         };
 
+        // Share the identity/size contract with replacement parameter transfer.
+        internal static bool IsRequiredReplacementParameter(Guid id) => id == GhGuid || DimensionIds.Contains(id);
+        internal static bool IsRequiredReplacementParameter(BuiltInParameter id) => NativeDimensionIds.Contains(id);
+
         public static IReadOnlyList<RebindLevel> CollectLevels(Document doc)
         {
             return new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>()
@@ -274,6 +278,9 @@ namespace GloryHoleRefreshElevations
                         report.Recreated++;
                         report.ReplacementIds.Add(instance.Id);
                         completedDetails.Add("Пересоздано отверстие: ID " + originalId + " → " + instance.Id + " · " + originalName);
+                        if (replacement!.TransferNotes.Count > 0)
+                            completedDetails.Add("ID " + instance.Id + ": перепривязка выполнена. "
+                                + string.Join(" ", replacement.TransferNotes));
                     }
                     if (!string.IsNullOrWhiteSpace(warning)) completedDetails.Add("ID " + instance.Id + ": " + warning);
                     if (callback != null) afterCommit.Add(callback);

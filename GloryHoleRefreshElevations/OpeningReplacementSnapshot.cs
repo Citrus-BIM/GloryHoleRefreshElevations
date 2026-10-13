@@ -22,6 +22,8 @@ namespace GloryHoleRefreshElevations
         private readonly HashSet<ElementId> allowedDeletion;
         private readonly List<ParameterValue> parameters;
         private readonly ParameterValue? floorHostOffset;
+        private readonly HashSet<string> transferNotes = new HashSet<string>(StringComparer.Ordinal);
+        internal IReadOnlyCollection<string> TransferNotes => transferNotes.ToArray();
 
         private OpeningReplacementSnapshot(FamilyInstance source)
         {
@@ -41,13 +43,13 @@ namespace GloryHoleRefreshElevations
             parameters = source.Parameters.Cast<Parameter>().Where(ShouldCopy).Select(p => new ParameterValue(p)).ToList();
             var hostOffset = source.get_Parameter(BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM);
             if (host is Floor && hostOffset != null && hostOffset.HasValue && hostOffset.StorageType == StorageType.Double)
-                floorHostOffset = new ParameterValue(hostOffset, BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM);
+                floorHostOffset = new ParameterValue(hostOffset, BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM, true);
             allowedDeletion = new HashSet<ElementId> { oldId };
             foreach (var id in source.GetDependentElements(null))
             {
                 if (id.Equals(oldId)) continue;
                 var dependent = document.GetElement(id);
-                if (dependent?.Category?.CategoryType != CategoryType.Annotation)
+                if (!OpeningReplacementDependencyPolicy.CanDeleteWithOpening(dependent))
                     throw OpeningReplacementException.Dependent(id, dependent);
                 allowedDeletion.Add(id);
             }
@@ -115,7 +117,22 @@ namespace GloryHoleRefreshElevations
                 || (phased && (!replacement.CreatedPhaseId.Equals(createdPhase) || !replacement.DemolishedPhaseId.Equals(demolishedPhase)))
                 || replacement.HandFlipped != handFlipped || replacement.FacingFlipped != facingFlipped || replacement.Mirrored != mirrored)
                 throw new InvalidOperationException("Не удалось сохранить свойства экземпляра отверстия");
-            foreach (var parameter in parameters) parameter.Verify(replacement);
+            // Rebuild notes from the final state: metadata may correct a value after the first check.
+            transferNotes.Clear();
+            foreach (var parameter in parameters)
+            {
+                if (parameter.IsCritical) parameter.Verify(replacement);
+                else
+                {
+                    try { parameter.Verify(replacement); }
+                    catch (Autodesk.Revit.Exceptions.RegenerationFailedException) { throw; }
+                    catch (Exception ex)
+                    {
+                        transferNotes.Add("Не перенесён параметр «" + parameter.Name + "». "
+                            + ((ex as OpeningReplacementException)?.Detail ?? ex.Message));
+                    }
+                }
+            }
             floorHostOffset?.Verify(replacement);
         }
 
@@ -148,8 +165,16 @@ namespace GloryHoleRefreshElevations
             if (parameter.IsReadOnly || parameter.StorageType == StorageType.None) return false;
             if (parameter.IsShared && (parameter.GUID == BaseHeight || parameter.GUID == ReportOffset)) return false;
             var definition = parameter.Definition as InternalDefinition;
-            return definition == null || !PlacementParameters.Contains(definition.BuiltInParameter.ToString());
+            if (definition != null && PlacementParameters.Contains(definition.BuiltInParameter.ToString())) return false;
+            if (IsCriticalParameter(parameter)) return true;
+            return parameter.HasValue && (parameter.StorageType != StorageType.String
+                || !string.IsNullOrWhiteSpace(parameter.AsString()));
         }
+
+        private static bool IsCriticalParameter(Parameter parameter)
+            => (parameter.IsShared && LevelRebindingService.IsRequiredReplacementParameter(parameter.GUID))
+                || (parameter.Definition is InternalDefinition definition
+                    && LevelRebindingService.IsRequiredReplacementParameter(definition.BuiltInParameter));
 
         private sealed class ParameterValue
         {
@@ -160,9 +185,12 @@ namespace GloryHoleRefreshElevations
             private readonly bool hasValue;
             private readonly object? value;
             private readonly string name;
+            internal string Name => name;
+            internal bool IsCritical { get; }
 
-            internal ParameterValue(Parameter source, BuiltInParameter? nativeId = null)
+            internal ParameterValue(Parameter source, BuiltInParameter? nativeId = null, bool forceCritical = false)
             {
+                IsCritical = forceCritical || IsCriticalParameter(source);
                 this.nativeId = nativeId;
                 definition = source.Definition; name = definition.Name;
                 sharedId = source.IsShared ? source.GUID : (Guid?)null;
@@ -181,6 +209,14 @@ namespace GloryHoleRefreshElevations
 
             internal void Apply(FamilyInstance target)
             {
+                if (IsCritical) { ApplyCore(target); return; }
+                try { ApplyCore(target); }
+                catch (Autodesk.Revit.Exceptions.RegenerationFailedException) { throw; }
+                catch (Exception) { /* Optional descriptions cannot prevent a geometrically valid replacement. */ }
+            }
+
+            private void ApplyCore(FamilyInstance target)
+            {
                 var parameter = Get(target);
                 if (Matches(parameter)) return;
                 if (!hasValue || parameter.IsReadOnly)
@@ -194,8 +230,8 @@ namespace GloryHoleRefreshElevations
                     default: throw new InvalidOperationException("Неподдерживаемый параметр: " + name);
                 }
                 // Family constraints may not expose the final value until the whole parameter
-                // batch and placement changes regenerate. The caller verifies all captured
-                // values after regeneration and again after commit, within its rollback group.
+                // batch and placement changes regenerate. The caller checks final values after
+                // regeneration and commit; only required geometry/identity mismatches abort.
             }
 
             internal void Verify(FamilyInstance target)

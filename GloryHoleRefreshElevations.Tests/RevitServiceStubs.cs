@@ -146,6 +146,9 @@ namespace Autodesk.Revit.DB
         public Category Category { get; set; }
         public ElementId LevelId { get; set; } = ElementId.InvalidElementId;
         public ElementId GroupId { get; set; } = ElementId.InvalidElementId;
+        public ElementId TypeId { get; set; } = ElementId.InvalidElementId;
+        public ElementId OwnerViewId { get; set; } = ElementId.InvalidElementId;
+        public bool ViewSpecific { get; set; }
         public Location Location { get; set; }
         public WorksetId WorksetId { get; set; } = new WorksetId(1);
         public ElementId CreatedPhaseId { get; set; } = ElementId.InvalidElementId;
@@ -179,11 +182,13 @@ namespace Autodesk.Revit.DB
                 target.Put(pair.Key, new Parameter(old.StorageType, old.Value) { Definition = old.Definition, IsReadOnly = old.IsReadOnly, IsShared = old.IsShared, GUID = old.GUID });
             }
         }
-        public virtual ElementId GetTypeId() => ElementId.InvalidElementId;
+        public virtual ElementId GetTypeId() => TypeId;
         internal virtual Action Capture()
         {
             var values = _parameters.ToDictionary(pair => pair.Key, pair => (pair.Value, pair.Value.Value));
             ElementId level = LevelId, group = GroupId;
+            ElementId type = TypeId, ownerView = OwnerViewId;
+            bool viewSpecific = ViewSpecific;
             bool valid = IsValidObject, pinned = Pinned;
             string uniqueId = UniqueId;
             var location = Location;
@@ -195,6 +200,7 @@ namespace Autodesk.Revit.DB
                 _parameters.Clear();
                 foreach (var pair in values) { _parameters[pair.Key] = pair.Value.Item1; pair.Value.Item1.Value = pair.Value.Item2; }
                 LevelId = level; GroupId = group; IsValidObject = valid; Pinned = pinned; UniqueId = uniqueId; Location = location;
+                TypeId = type; OwnerViewId = ownerView; ViewSpecific = viewSpecific;
                 WorksetId = workset; CreatedPhaseId = created; DemolishedPhaseId = demolished; DesignOption = option;
                 if (Location is LocationPoint lp) { lp.Point = point; lp.Rotation = rotation; }
             };

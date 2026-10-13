@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Autodesk.Revit.DB;
 
 namespace GloryHoleRefreshElevations
@@ -22,6 +23,13 @@ namespace GloryHoleRefreshElevations
                     detail += "; семейство=" + instance.Symbol?.Family?.Name + "; тип=" + instance.Symbol?.Name
                         + "; SuperComponent=" + (instance.SuperComponent?.Id.ToString() ?? "нет")
                         + "; Host=" + (instance.Host?.Id.ToString() ?? "нет");
+                if (element.GetType() == typeof(Element))
+                    detail += "; параметров=" + element.Parameters.Cast<Parameter>().Count()
+                        + "; служебных схем=" + element.GetEntitySchemaGuids().Count
+                        + "; размещение=" + (element.Location?.GetType().Name ?? "нет")
+                        + "; TypeId=" + element.GetTypeId() + "; GroupId=" + element.GroupId
+                        + "; закреплён=" + element.Pinned + "; ViewSpecific=" + element.ViewSpecific
+                        + "; OwnerViewId=" + element.OwnerViewId;
             }
             return new OpeningReplacementException("Пересоздание затронуло бы зависимый модельный или служебный элемент", detail);
         }

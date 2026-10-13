@@ -75,7 +75,7 @@ namespace GloryHoleRefreshElevations.Tests
         }
 
         [Fact]
-        public void RejectedUserParameterIncludesExpectedActualAndIdentityWithoutSplittingReasonGroups()
+        public void RejectedUserParameterAddsATransferNoteWithoutBlockingReplacement()
         {
             var fixture = new Fixture();
             fixture.Old.get_Parameter(Custom).Definition.Name = "User note";
@@ -83,10 +83,145 @@ namespace GloryHoleRefreshElevations.Tests
 
             var report = fixture.Model.Run(fixture.Old);
 
-            AssertRestored(fixture, report);
-            Assert.Equal("Изменился параметр отверстия: User note", Assert.Single(report.Reasons).Key);
+            Assert.Equal(1, report.Recreated);
+            Assert.Empty(report.Reasons);
+            Assert.Empty(report.SkippedIds);
             Assert.Contains(report.Details, text => text.Contains(Custom.ToString())
                 && text.Contains("approval text") && text.Contains("ожидалось") && text.Contains("получено"));
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("  ")]
+        public void EmptyOrdinaryGroupingKeepsTheFamilyDefaultWithoutNotes(string? oldValue)
+        {
+            var groupingId = new Guid("3de5f1a4-d560-4fa8-a74f-25d250fb3401");
+            var fixture = new Fixture();
+            fixture.Old.Put(groupingId, new Parameter(StorageType.String, oldValue));
+            fixture.Old.get_Parameter(groupingId).Definition.Name = "ADSK_Группирование";
+            int writes = 0;
+            fixture.PrepareCreation(item =>
+            {
+                var grouping = item.get_Parameter(groupingId);
+                grouping.Value = "4.Другие элементы систем";
+                grouping.AfterSet = _ => { writes++; grouping.Value = "4.Другие элементы систем"; };
+            });
+
+            var report = fixture.Model.Run(fixture.Old);
+
+            Assert.Equal(1, report.Recreated);
+            Assert.Equal(0, writes);
+            Assert.Equal("4.Другие элементы систем", fixture.New.get_Parameter(groupingId).AsString());
+            Assert.DoesNotContain(report.Details, text => text.Contains("ADSK_Группирование"));
+            Assert.Equal("preserved-guid", fixture.New.get_Parameter(GhGuid).AsString());
+            Assert.Equal(7, fixture.New.get_Parameter(Width).AsDouble());
+            Assert.Equal(15, ((LocationPoint)fixture.New.Location).Point.Z);
+        }
+
+        [Theory]
+        [InlineData("readonly")]
+        [InlineData("missing")]
+        [InlineData("wrong-storage")]
+        [InlineData("throws")]
+        public void FilledOrdinaryParameterFailureDoesNotBlockGeometry(string reason)
+        {
+            var fixture = new Fixture();
+            fixture.Old.get_Parameter(Custom).Definition.Name = "User note";
+            fixture.PrepareCreation(item =>
+            {
+                var parameter = item.get_Parameter(Custom);
+                switch (reason)
+                {
+                    case "readonly": parameter.IsReadOnly = true; break;
+                    case "missing": item.Put(Custom, null); break;
+                    case "wrong-storage": item.Put(Custom, new Parameter(StorageType.Double, 1.0)); break;
+                    case "throws": parameter.AfterSet = _ => { parameter.Value = "family default"; throw new InvalidOperationException("ordinary parameter error"); }; break;
+                }
+            });
+
+            var report = fixture.Model.Run(fixture.Old);
+
+            Assert.Null(report.Failure);
+            Assert.Equal(1, report.Recreated);
+            Assert.Empty(report.SkippedIds);
+            Assert.Contains(report.Details, text => text.Contains("User note"));
+            Assert.Equal(7, fixture.New.get_Parameter(Width).AsDouble());
+            Assert.Equal("preserved-guid", fixture.New.get_Parameter(GhGuid).AsString());
+        }
+
+        [Fact]
+        public void PostCommitOrdinaryParameterChangesOnlyAddOneTransferNote()
+        {
+            var fixture = new Fixture();
+            fixture.Old.get_Parameter(Custom).Definition.Name = "User note";
+            fixture.PrepareCreation();
+            fixture.Model.Document.AfterCommit = _ => fixture.New?.get_Parameter(Custom).Set("family value");
+
+            var report = fixture.Model.Run(fixture.Old);
+
+            Assert.Equal(1, report.Recreated);
+            Assert.Empty(report.SkippedIds);
+            Assert.Single(report.Details, text => text.Contains("User note"));
+            Assert.Equal("family value", fixture.New.get_Parameter(Custom).AsString());
+        }
+
+        [Fact]
+        public void FatalRegenerationDuringOrdinaryParameterWriteStillAborts()
+        {
+            var fixture = new Fixture();
+            fixture.PrepareCreation(item => item.get_Parameter(Custom).AfterSet = _ =>
+                throw new Autodesk.Revit.Exceptions.RegenerationFailedException("fatal parameter write"));
+
+            var report = fixture.Model.Run(fixture.Old);
+
+            Assert.NotNull(report.Failure);
+            Assert.Equal(0, report.Recreated);
+            Assert.True(fixture.Old.IsValidObject);
+            Assert.False(fixture.New.IsValidObject);
+        }
+
+        [Fact]
+        public void HubIdentityIsStillMandatoryWhenOrdinaryParametersAreBestEffort()
+        {
+            var projectId = new Guid("8b5f2c01-9ad4-4e2f-b8c7-1d0e3a5b7c9d");
+            var fixture = new Fixture();
+            fixture.Old.Put(projectId, new Parameter(StorageType.String, Guid.NewGuid().ToString()));
+            fixture.PrepareCreation(item =>
+            {
+                var project = item.get_Parameter(projectId);
+                project.Value = ""; project.IsReadOnly = true;
+            });
+
+            AssertRestored(fixture, RunWithBridge(fixture, new OrderingBridge(fixture.Model.Document)));
+        }
+
+        [Fact]
+        public void AnonymousOwnedDependentMayBeDeletedWithOpening()
+        {
+            var fixture = new Fixture();
+            var owned = fixture.Model.Document.Add(new Element { Name = "", Category = null, Location = null });
+            fixture.Old.Dependents.Add(owned.Id);
+            fixture.PrepareCreation();
+
+            var report = fixture.Model.Run(fixture.Old);
+
+            Assert.Equal(1, report.Recreated);
+            Assert.False(owned.IsValidObject);
+            Assert.False(fixture.Old.IsValidObject);
+            Assert.True(fixture.New.IsValidObject);
+        }
+
+        [Fact]
+        public void UnexpectedAnonymousDeletionStillRestoresOriginal()
+        {
+            var fixture = new Fixture();
+            var unexpected = fixture.Model.Document.Add(new Element { Name = "", Category = null, Location = null });
+            fixture.Model.Document.UnexpectedDeleteIds.Add(unexpected.Id);
+            fixture.PrepareCreation();
+
+            AssertRestored(fixture, fixture.Model.Run(fixture.Old));
+            Assert.True(unexpected.IsValidObject);
         }
 
         [Fact]
@@ -290,7 +425,7 @@ namespace GloryHoleRefreshElevations.Tests
 
         [Theory]
         [InlineData("dimension")]
-        [InlineData("custom")]
+        [InlineData("gh-guid")]
         [InlineData("phase")]
         [InlineData("workset")]
         [InlineData("level")]
@@ -307,7 +442,7 @@ namespace GloryHoleRefreshElevations.Tests
                 switch (damage)
                 {
                     case "dimension": item.get_Parameter(Width).Set(19.0); break;
-                    case "custom": item.get_Parameter(Custom).Set("lost"); break;
+                    case "gh-guid": item.get_Parameter(GhGuid).Set("lost"); break;
                     case "phase": item.CreatedPhaseId = ElementId.InvalidElementId; break;
                     case "workset": item.WorksetId = new WorksetId(99); break;
                     case "level": item.LevelId = fixture.Model.Original.Id; break;
@@ -322,8 +457,6 @@ namespace GloryHoleRefreshElevations.Tests
 
         [Theory]
         [InlineData("readonly-dimension")]
-        [InlineData("readonly-custom")]
-        [InlineData("missing-custom")]
         [InlineData("wrong-target")]
         [InlineData("no-cut")]
         public void InvalidReplacementRollsBackBeforeCountingSuccess(string damage)
@@ -334,8 +467,6 @@ namespace GloryHoleRefreshElevations.Tests
                 switch (damage)
                 {
                     case "readonly-dimension": item.get_Parameter(Width).IsReadOnly = true; break;
-                    case "readonly-custom": item.get_Parameter(Custom).IsReadOnly = true; break;
-                    case "missing-custom": item.Put(Custom, null); break;
                     case "wrong-target": item.LevelId = fixture.Model.Original.Id; break;
                     case "no-cut": ((HostObject)item.Host).Inserts.Remove(item.Id); break;
                 }
