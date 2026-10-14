@@ -281,7 +281,6 @@ namespace GloryHoleRefreshElevations
                 if (report.Reasons.Count > 0)
                     content += "\n\n" + string.Join("\n", report.Reasons.Take(6).Select(p => p.Value + " — " + p.Key));
                 if (report.Reasons.Count > 6) content += "\nОстальные причины — в подробностях.";
-                if (rebind) content += "\n\nПосле перепривязки проверьте привязку к уровням.";
             }
             if (report.UpdaterRestoreFailure != null)
                 content += "\n\nНе удалось восстановить автоматическое обновление: "

@@ -828,7 +828,7 @@ namespace GloryHoleRefreshElevations.Tests
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
-        public void WarningAloneDoesNotCancelAValidOpeningLevelChange(bool recreate)
+        public void UnknownWarningWithDuplicateMarkTextIsNotSilenced(bool recreate)
         {
             var fixture = new Fixture();
             fixture.Old.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM).IsReadOnly = recreate;
@@ -845,6 +845,74 @@ namespace GloryHoleRefreshElevations.Tests
         }
 
         [Theory]
+        [InlineData(false, "Элементы имеют повторяющиеся значения «Марка».")]
+        [InlineData(true, "Elements have duplicate Mark values.")]
+        public void ExpectedDuplicateMarkIsRemovedByFailureIdWithoutHidingOtherWarnings(bool recreate, string description)
+        {
+            var fixture = new Fixture();
+            fixture.Old.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM).IsReadOnly = recreate;
+            fixture.PrepareCreation();
+            var duplicate = new FailureMessageAccessor { Severity = FailureSeverity.Warning,
+                DefinitionId = BuiltInFailures.GeneralFailures.DuplicateValue, Description = description };
+            var overlap = new FailureMessageAccessor { Severity = FailureSeverity.Warning, Description = "Inserts overlap or are outside their hosts" };
+            fixture.Model.Document.NextFailures.Add(duplicate);
+            fixture.Model.Document.NextFailures.Add(overlap);
+
+            var report = fixture.Model.Run(fixture.Old);
+
+            Assert.Equal(1, report.Changed);
+            Assert.Equal(recreate ? 1 : 0, report.Recreated);
+            Assert.Empty(report.SkippedIds);
+            Assert.True(duplicate.WasDeleted);
+            Assert.False(overlap.WasDeleted);
+            Assert.DoesNotContain(report.Details, text => text.Contains(description));
+            Assert.Contains(report.Details, text => text.Contains(overlap.Description));
+        }
+
+        [Fact]
+        public void DuplicateValueErrorIsNotSilencedAsAWarning()
+        {
+            var fixture = new Fixture(); fixture.PrepareCreation();
+            var failure = new FailureMessageAccessor { Severity = FailureSeverity.Error,
+                DefinitionId = BuiltInFailures.GeneralFailures.DuplicateValue, Description = "Revit error" };
+            fixture.Model.Document.NextFailures.Add(failure);
+            AssertRestored(fixture, fixture.Model.Run(fixture.Old));
+            Assert.False(failure.WasDeleted);
+        }
+
+        [Fact]
+        public void DuplicateMarkSuppressionDoesNotChangeTheTaskRebindingPolicy()
+        {
+            var model = new LevelRebindingServiceTests.Model();
+            var task = model.Create("task");
+            var warning = new FailureMessageAccessor { Severity = FailureSeverity.Warning,
+                DefinitionId = BuiltInFailures.GeneralFailures.DuplicateValue, Description = "Duplicate Mark" };
+            model.Document.NextFailures.Add(warning);
+            var report = model.Run(task);
+            Assert.Equal(0, report.Changed);
+            Assert.Equal(task.Id, Assert.Single(report.SkippedIds));
+            Assert.Equal(model.Original.Id, task.LevelId);
+            Assert.False(warning.WasDeleted);
+        }
+
+        [Theory]
+        [InlineData("task")]
+        [InlineData("wall")]
+        public void StandaloneRefreshRetainsNativeDuplicateValueWarnings(string shape)
+        {
+            var model = new LevelRebindingServiceTests.Model();
+            var item = model.Create(shape);
+            var warning = new FailureMessageAccessor { Severity = FailureSeverity.Warning,
+                DefinitionId = BuiltInFailures.GeneralFailures.DuplicateValue, Description = "Duplicate Mark" };
+            model.Document.NextFailures.Add(warning);
+            var report = LevelRebindingService.Execute(model.Document, new[] { item }, false, true, false,
+                null, _ => { }, false, false);
+            Assert.Equal(1, report.Refreshed);
+            Assert.Empty(report.SkippedIds);
+            Assert.False(warning.WasDeleted);
+        }
+
+        [Theory]
         [InlineData("point")]
         [InlineData("dimension")]
         [InlineData("guid")]
@@ -853,7 +921,8 @@ namespace GloryHoleRefreshElevations.Tests
         {
             var fixture = new Fixture(); fixture.PrepareCreation();
             fixture.Model.Document.NextFailures.Add(new FailureMessageAccessor
-                { Severity = FailureSeverity.Warning, Description = "warning with damage" });
+                { Severity = FailureSeverity.Warning, DefinitionId = BuiltInFailures.GeneralFailures.DuplicateValue,
+                    Description = "Duplicate Mark" });
             bool committedBeforeValidation = false;
             fixture.Model.Document.AfterCommit = _ =>
             {

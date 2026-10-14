@@ -224,7 +224,7 @@ namespace GloryHoleRefreshElevations
                             doc.Regenerate();
                             replacement.Verify(instance);
                             VerifyOpening(instance, target, before, relations, false, false, true);
-                        }, false, warnings);
+                        }, false, warnings, suppressDuplicateValues: true);
                         replacement.Verify(instance);
                         VerifyOpening(instance, target, before, relations, false, false, true);
                     }
@@ -252,7 +252,7 @@ namespace GloryHoleRefreshElevations
                             doc.Regenerate();
                             if (wasPinned) instance.Pinned = true;
                             VerifyOpening(instance, target, before, relations, false, false);
-                        }, false, warnings);
+                        }, false, warnings, suppressDuplicateValues: true);
                         VerifyOpening(instance, target, before, relations, false, false);
                     }
 
@@ -265,7 +265,7 @@ namespace GloryHoleRefreshElevations
                         replacement?.Verify(instance);
                         VerifyOpening(instance, target, before, relations, false, false, recreate);
                         metadata?.Verify(instance);
-                    }, false, warnings);
+                    }, false, warnings, suppressDuplicateValues: true);
                     replacement?.Verify(instance);
                     VerifyOpening(instance, target, before, relations, false, false, recreate);
                     metadata?.Verify(instance);
@@ -514,12 +514,12 @@ namespace GloryHoleRefreshElevations
         }
 
         private static void RunTransaction(Document doc, string name, Action action, bool rollbackWarnings = true,
-            ICollection<string>? warnings = null)
+            ICollection<string>? warnings = null, bool suppressDuplicateValues = false)
         {
             using (var transaction = new Transaction(doc, name))
             {
                 RequireStarted(transaction.Start());
-                var failures = new RollbackOnFailure(rollbackWarnings);
+                var failures = new RollbackOnFailure(rollbackWarnings, suppressDuplicateValues);
                 transaction.SetFailureHandlingOptions(transaction.GetFailureHandlingOptions()
                     .SetFailuresPreprocessor(failures).SetClearAfterRollback(true));
                 try
@@ -549,17 +549,33 @@ namespace GloryHoleRefreshElevations
         private sealed class RollbackOnFailure : IFailuresPreprocessor
         {
             private readonly bool rollbackWarnings;
-            public RollbackOnFailure(bool rollbackWarnings) { this.rollbackWarnings = rollbackWarnings; }
+            private readonly bool suppressDuplicateValues;
+            public RollbackOnFailure(bool rollbackWarnings, bool suppressDuplicateValues)
+            {
+                this.rollbackWarnings = rollbackWarnings;
+                this.suppressDuplicateValues = suppressDuplicateValues;
+            }
             public string? Reason { get; private set; }
             public bool DocumentCorruption { get; private set; }
             public HashSet<string> Warnings { get; } = new HashSet<string>(StringComparer.Ordinal);
             public FailureProcessingResult PreprocessFailures(FailuresAccessor accessor)
             {
-                var messages = accessor.GetFailureMessages();
-                foreach (var message in messages.Where(m => m.GetSeverity() == FailureSeverity.Warning))
-                    Warnings.Add(message.GetDescriptionText());
+                var messages = accessor.GetFailureMessages().ToList();
                 DocumentCorruption = messages.Any(m => m.GetSeverity() == FailureSeverity.DocumentCorruption);
                 var failure = messages.FirstOrDefault(m => rollbackWarnings || m.GetSeverity() != FailureSeverity.Warning);
+                foreach (var message in messages.Where(m => m.GetSeverity() == FailureSeverity.Warning))
+                {
+                    // Rebinding preserves existing marks/values. Their duplicates are expected here;
+                    // remove that warning from Revit handling as well as the completion report.
+                    // Keep all other warnings and the stricter task-rebinding policy unchanged.
+                    if (suppressDuplicateValues && !rollbackWarnings && message.GetFailureDefinitionId()
+                        .Equals(BuiltInFailures.GeneralFailures.DuplicateValue))
+                    {
+                        accessor.DeleteWarning(message);
+                        continue;
+                    }
+                    Warnings.Add(message.GetDescriptionText());
+                }
                 if (failure == null) return FailureProcessingResult.Continue;
                 // Finished-opening changes retain normal warning handling. Their placement,
                 // dimensions, identity and cuts are checked again after commit before assimilation.

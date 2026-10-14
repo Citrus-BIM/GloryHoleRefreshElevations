@@ -345,18 +345,41 @@ namespace Autodesk.Revit.DB
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
     public interface IFailuresPreprocessor { FailureProcessingResult PreprocessFailures(FailuresAccessor accessor); }
+    public sealed class FailureDefinitionId
+    {
+        private readonly Guid value;
+        public FailureDefinitionId(Guid value) { this.value = value; }
+        public override bool Equals(object other) => other is FailureDefinitionId id && value == id.value;
+        public override int GetHashCode() => value.GetHashCode();
+    }
+    public static class BuiltInFailures
+    {
+        public static class GeneralFailures
+        {
+            public static FailureDefinitionId DuplicateValue { get; } = new FailureDefinitionId(new Guid("9f39b5e7-40b8-4f28-a08b-a811ed42442a"));
+        }
+    }
     public sealed class FailureMessageAccessor
     {
         public FailureSeverity Severity { get; set; }
         public string Description { get; set; } = "Revit failure";
+        public FailureDefinitionId DefinitionId { get; set; } = new FailureDefinitionId(Guid.NewGuid());
+        public bool WasDeleted { get; internal set; }
         public FailureSeverity GetSeverity() => Severity;
         public string GetDescriptionText() => Description;
+        public FailureDefinitionId GetFailureDefinitionId() => DefinitionId;
     }
     public sealed class FailuresAccessor
     {
         private readonly IList<FailureMessageAccessor> _messages;
         public FailuresAccessor(IList<FailureMessageAccessor> messages) { _messages = messages; }
-        public IList<FailureMessageAccessor> GetFailureMessages() => _messages;
+        public IList<FailureMessageAccessor> GetFailureMessages() => _messages.ToList();
+        public void DeleteWarning(FailureMessageAccessor message)
+        {
+            if (message.Severity != FailureSeverity.Warning) throw new InvalidOperationException("Only warnings can be deleted");
+            message.WasDeleted = true;
+            _messages.Remove(message);
+        }
     }
     public sealed class FailureHandlingOptions
     {
