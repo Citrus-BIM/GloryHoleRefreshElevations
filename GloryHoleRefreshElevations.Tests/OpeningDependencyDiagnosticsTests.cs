@@ -7,13 +7,14 @@ namespace GloryHoleRefreshElevations.Tests
     public sealed class OpeningDependencyDiagnosticsTests
     {
         [Fact]
-        public void AnonymousDependencyWithDataExplainsWhyItCannotFollowOpeningDeletion()
+        public void AnonymousDependencyWithExtensibleStorageExplainsWhyItCannotFollowOpeningDeletion()
         {
             var model = new LevelRebindingServiceTests.Model();
             var source = model.Create("wall");
             source.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM).IsReadOnly = true;
             var dependent = model.Document.Add(new Element { Name = string.Empty });
             dependent.Put(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS, new Parameter(StorageType.String, "keep"));
+            dependent.EntitySchemaGuids.Add(System.Guid.NewGuid());
             source.Dependents.Add(dependent.Id);
 
             var report = model.Run(source);
@@ -21,6 +22,7 @@ namespace GloryHoleRefreshElevations.Tests
             Assert.Equal(0, report.Recreated);
             Assert.True(dependent.IsValidObject);
             Assert.Contains("параметров=1", Assert.Single(report.Details));
+            Assert.Contains("служебных схем=1", Assert.Single(report.Details));
         }
 
         [Fact]

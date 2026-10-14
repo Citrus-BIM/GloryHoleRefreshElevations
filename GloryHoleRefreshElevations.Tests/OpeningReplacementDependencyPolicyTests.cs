@@ -36,9 +36,6 @@ namespace GloryHoleRefreshElevations.Tests
         [InlineData("category")]
         [InlineData("location")]
         [InlineData("type")]
-        [InlineData("parameter")]
-        [InlineData("empty-parameter")]
-        [InlineData("readonly-parameter")]
         [InlineData("schema")]
         [InlineData("pinned")]
         [InlineData("group")]
@@ -54,10 +51,6 @@ namespace GloryHoleRefreshElevations.Tests
                 case "category": dependent.Category = new Category { CategoryType = CategoryType.Model }; break;
                 case "location": dependent.Location = new LocationPoint { Point = XYZ.Zero }; break;
                 case "type": dependent.TypeId = new ElementId(22); break;
-                case "parameter": dependent.Put(Guid.NewGuid(), new Parameter(StorageType.String, "identity")); break;
-                case "empty-parameter": dependent.Put(Guid.NewGuid(), new Parameter(StorageType.String, null)); break;
-                case "readonly-parameter": dependent.Put(BuiltInParameter.ELEM_PARTITION_PARAM,
-                    new Parameter(StorageType.Integer, 1) { IsReadOnly = true }); break;
                 case "schema": dependent.EntitySchemaGuids.Add(Guid.NewGuid()); break;
                 case "pinned": dependent.Pinned = true; break;
                 case "group": dependent.GroupId = new ElementId(33); break;
@@ -75,6 +68,19 @@ namespace GloryHoleRefreshElevations.Tests
             Assert.False(OpeningReplacementDependencyPolicy.CanDeleteWithOpening(new Wall { Name = "" }));
             Assert.False(OpeningReplacementDependencyPolicy.CanDeleteWithOpening(new FamilyInstance { Name = "" }));
             Assert.False(OpeningReplacementDependencyPolicy.CanDeleteWithOpening(new OtherElement { Name = "" }));
+        }
+
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(false, true)]
+        [InlineData(true, false)]
+        [InlineData(true, true)]
+        public void ParametersDoNotTurnAnUnplacedAnonymousDependencyIntoAModelElement(bool shared, bool readOnly)
+        {
+            var dependent = Anonymous();
+            dependent.Put(shared ? (object)Guid.NewGuid() : BuiltInParameter.ELEM_PARTITION_PARAM,
+                new Parameter(StorageType.Integer, 1) { IsReadOnly = readOnly });
+            Assert.True(OpeningReplacementDependencyPolicy.CanDeleteWithOpening(dependent));
         }
 
         [Fact]

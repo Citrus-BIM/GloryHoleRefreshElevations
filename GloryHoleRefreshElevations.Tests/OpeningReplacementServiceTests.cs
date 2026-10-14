@@ -224,6 +224,73 @@ namespace GloryHoleRefreshElevations.Tests
             Assert.True(unexpected.IsValidObject);
         }
 
+        [Theory]
+        [InlineData(1)]
+        [InlineData(22)]
+        public void OpeningsWithACommonSevenParameterDependencyAreRecreated(int count)
+        {
+            var model = new LevelRebindingServiceTests.Model();
+            var owned = model.Document.Add(new Element { Name = "", Category = null, Location = null });
+            for (int i = 0; i < 7; i++)
+                owned.Put("service-" + i, new Parameter(StorageType.Integer, i) { IsReadOnly = true });
+            var fixtures = Enumerable.Range(0, count).Select(_ => new Fixture(model: model)).ToArray();
+            var creators = new Dictionary<ElementId, Func<XYZ, FamilySymbol, Element, Level, FamilyInstance>>();
+            foreach (var fixture in fixtures)
+            {
+                fixture.Old.Dependents.Add(owned.Id);
+                fixture.PrepareCreation();
+                creators.Add(fixture.Old.Host.Id, model.Document.CreateFamilyInstance);
+            }
+            model.Document.CreateFamilyInstance = (point, symbol, host, level) => creators[host.Id](point, symbol, host, level);
+
+            var report = model.Run(fixtures.Select(fixture => fixture.Old).ToArray());
+
+            Assert.Null(report.Failure);
+            Assert.Equal(count, report.Recreated);
+            Assert.Empty(report.SkippedIds);
+            Assert.False(owned.IsValidObject);
+            foreach (var fixture in fixtures)
+            {
+                Assert.False(fixture.Old.IsValidObject);
+                Assert.True(fixture.New.IsValidObject);
+                Assert.Equal(model.Target.Id, fixture.New.LevelId);
+                Assert.Equal(7, fixture.New.get_Parameter(Width).AsDouble());
+                Assert.Equal("preserved-guid", fixture.New.get_Parameter(GhGuid).AsString());
+                Assert.True(new XYZ(1, 2, 15).DistanceTo(((LocationPoint)fixture.New.Location).Point) < 1e-9);
+                Assert.Contains(fixture.New.Id, ((HostObject)fixture.New.Host).Inserts);
+            }
+        }
+
+        [Theory]
+        [InlineData("width")]
+        [InlineData("point")]
+        [InlineData("guid")]
+        [InlineData("native-cut")]
+        public void RequiredOpeningDamageStillRestoresItsParameterizedDependency(string damage)
+        {
+            var fixture = new Fixture();
+            var owned = fixture.Model.Document.Add(new Element { Name = "", Category = null, Location = null });
+            owned.Put(BuiltInParameter.ELEM_PARTITION_PARAM, new Parameter(StorageType.Integer, 1));
+            fixture.Old.Dependents.Add(owned.Id);
+            fixture.PrepareCreation();
+            fixture.Model.Document.AfterCommit = _ =>
+            {
+                switch (damage)
+                {
+                    case "width": fixture.New.get_Parameter(Width).Value = 1.0; break;
+                    case "point": ((LocationPoint)fixture.New.Location).Point += XYZ.BasisZ; break;
+                    case "guid": fixture.New.get_Parameter(GhGuid).Value = "lost"; break;
+                    case "native-cut": ((HostObject)fixture.New.Host).Inserts.Remove(fixture.New.Id); break;
+                }
+            };
+
+            AssertRestored(fixture, fixture.Model.Run(fixture.Old));
+            Assert.NotNull(fixture.New);
+            Assert.False(fixture.New.IsValidObject);
+            Assert.True(owned.IsValidObject);
+            Assert.Equal(1, owned.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM).AsInteger());
+        }
+
         [Fact]
         public void FloorKeepsHostRelativeOffsetWhenConstructorResetsIt()
         {
@@ -547,11 +614,12 @@ namespace GloryHoleRefreshElevations.Tests
 
         private sealed class Fixture
         {
-            internal readonly LevelRebindingServiceTests.Model Model = new LevelRebindingServiceTests.Model();
+            internal readonly LevelRebindingServiceTests.Model Model;
             internal readonly FamilyInstance Old;
             internal FamilyInstance New;
-            internal Fixture(string shape = "wall")
+            internal Fixture(string shape = "wall", LevelRebindingServiceTests.Model model = null)
             {
+                Model = model ?? new LevelRebindingServiceTests.Model();
                 Old = Model.Create(shape);
                 Old.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM).IsReadOnly = true;
                 Old.get_Parameter(Width).Set(7.0);

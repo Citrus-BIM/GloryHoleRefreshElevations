@@ -157,7 +157,9 @@ namespace Autodesk.Revit.DB
         public bool HasPhases() => Phased;
         public bool Phased { get; set; } = true;
         public ICollection<ElementId> Dependents { get; } = new List<ElementId>();
-        public IList<ElementId> GetDependentElements(ElementFilter filter) => Dependents.ToList();
+        // A dependency removed by an earlier replacement no longer belongs to the document.
+        public IList<ElementId> GetDependentElements(ElementFilter filter)
+            => Dependents.Where(id => Document.GetElement(id) != null).ToList();
         public IList<Guid> EntitySchemaGuids { get; } = new List<Guid>();
         public IList<Guid> GetEntitySchemaGuids() => EntitySchemaGuids.ToList();
         public Parameter get_Parameter(Guid id) => _parameters.TryGetValue(id, out var value) ? value : null;
