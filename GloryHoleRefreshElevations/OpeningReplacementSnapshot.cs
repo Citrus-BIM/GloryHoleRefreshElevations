@@ -22,6 +22,7 @@ namespace GloryHoleRefreshElevations
         private readonly HashSet<ElementId> allowedDeletion;
         private readonly List<ParameterValue> parameters;
         private readonly ParameterValue? floorHostOffset;
+        private readonly HashSet<string> captureNotes = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<string> transferNotes = new HashSet<string>(StringComparer.Ordinal);
         internal IReadOnlyCollection<string> TransferNotes => transferNotes.ToArray();
 
@@ -40,7 +41,7 @@ namespace GloryHoleRefreshElevations
             demolishedPhase = phased ? source.DemolishedPhaseId : ElementId.InvalidElementId;
             workset = source.WorksetId;
             designOption = source.DesignOption?.Id ?? ElementId.InvalidElementId;
-            parameters = source.Parameters.Cast<Parameter>().Where(ShouldCopy).Select(p => new ParameterValue(p)).ToList();
+            parameters = CaptureParameters(source);
             var hostOffset = source.get_Parameter(BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM);
             if (host is Floor && hostOffset != null && hostOffset.HasValue && hostOffset.StorageType == StorageType.Double)
                 floorHostOffset = new ParameterValue(hostOffset, BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM, true);
@@ -56,6 +57,33 @@ namespace GloryHoleRefreshElevations
         }
 
         internal static OpeningReplacementSnapshot Capture(FamilyInstance source) => new OpeningReplacementSnapshot(source);
+
+        private List<ParameterValue> CaptureParameters(FamilyInstance source)
+        {
+            var captured = new List<ParameterValue>();
+            foreach (Parameter parameter in source.Parameters)
+            {
+                // Classify outside the optional read scope: identity and dimensions must never
+                // disappear from the snapshot because their values could not be read.
+                if (IsCriticalParameter(parameter))
+                {
+                    if (ShouldCopy(parameter)) captured.Add(new ParameterValue(parameter));
+                    continue;
+                }
+                string name = "<без имени>";
+                try
+                {
+                    name = parameter.Definition?.Name ?? name;
+                    if (ShouldCopy(parameter)) captured.Add(new ParameterValue(parameter));
+                }
+                catch (Autodesk.Revit.Exceptions.RegenerationFailedException) { throw; }
+                catch (Exception ex)
+                {
+                    captureNotes.Add("Не прочитан необязательный исходный параметр «" + name + "»: " + ex.Message);
+                }
+            }
+            return captured;
+        }
 
         internal FamilyInstance Replace(Level target)
         {
@@ -119,6 +147,7 @@ namespace GloryHoleRefreshElevations
                 throw new InvalidOperationException("Не удалось сохранить свойства экземпляра отверстия");
             // Rebuild notes from the final state: metadata may correct a value after the first check.
             transferNotes.Clear();
+            transferNotes.UnionWith(captureNotes);
             foreach (var parameter in parameters)
             {
                 if (parameter.IsCritical) parameter.Verify(replacement);

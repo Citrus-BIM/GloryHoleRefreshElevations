@@ -15,6 +15,275 @@ namespace GloryHoleRefreshElevations.Tests
         private static readonly Guid ReportOffset = new Guid("515dc061-93ce-40e4-859a-e29224d80a10");
         private static readonly Guid Height = new Guid("da753fe3-ecfa-465b-9a2c-02f55d0c2ff1");
 
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void UnreadableOptionalSourceParameterCannotBlockReplacementAndKeepsOneNote(bool numeric)
+        {
+            var fixture = new Fixture();
+            fixture.Old.Put(Custom, numeric ? new Parameter(StorageType.Double, 42.0)
+                : new Parameter(StorageType.String, "approval text"));
+            var parameter = fixture.Old.get_Parameter(Custom);
+            parameter.Definition.Name = "Optional source data";
+            parameter.BeforeRead = () => throw new InvalidOperationException("source getter unavailable");
+            fixture.PrepareCreation(item =>
+            {
+                if (numeric) item.get_Parameter(Custom).Value = 0.0;
+            });
+            // Creation emulates family defaults; the unreadable old value must not be consulted.
+            var report = fixture.Model.Run(fixture.Old);
+
+            Assert.Null(report.Failure);
+            Assert.Equal(1, report.Recreated);
+            Assert.Empty(report.SkippedIds);
+            Assert.Equal(fixture.Model.Target.Id, fixture.New.LevelId);
+            Assert.Equal("preserved-guid", fixture.New.get_Parameter(GhGuid).AsString());
+            Assert.Equal(7, fixture.New.get_Parameter(Width).AsDouble());
+            Assert.Equal(15, ((LocationPoint)fixture.New.Location).Point.Z);
+            Assert.Single(report.Details, note => note.Contains("Optional source data")
+                && note.Contains("source getter unavailable"));
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void UnreadableCriticalSourceParameterStillBlocksReplacement(bool identity)
+        {
+            var fixture = new Fixture();
+            var parameter = fixture.Old.get_Parameter(identity ? GhGuid : Width);
+            parameter.BeforeRead = () => throw new InvalidOperationException("critical getter unavailable");
+            fixture.PrepareCreation();
+            Assert.Throws<InvalidOperationException>(() => OpeningReplacementSnapshot.Capture(fixture.Old));
+
+            var report = fixture.Model.Run(fixture.Old);
+
+            parameter.BeforeRead = null;
+            AssertRestored(fixture, report);
+            Assert.Null(fixture.New);
+            Assert.Contains(report.Details, note => note.Contains("critical getter unavailable"));
+        }
+
+        [Fact]
+        public void FatalRegenerationDuringOptionalSourceReadStillAborts()
+        {
+            var fixture = new Fixture();
+            fixture.Old.get_Parameter(Custom).BeforeRead = () =>
+                throw new Autodesk.Revit.Exceptions.RegenerationFailedException("fatal source getter");
+            fixture.PrepareCreation();
+            var report = fixture.Model.Run(fixture.Old);
+
+            Assert.NotNull(report.Failure);
+            Assert.Equal(0, report.Changed);
+            Assert.Equal(0, report.Recreated);
+            Assert.True(fixture.Old.IsValidObject);
+            Assert.Null(fixture.New);
+            Assert.Equal(fixture.Model.Original.Id, fixture.Old.LevelId);
+        }
+
+        [Fact]
+        public void CombinedAuxiliaryChangesDoNotCancelAValidPinnedOpeningReplacement()
+        {
+            var fixture = new Fixture();
+            fixture.Old.Pinned = true;
+            Guid grouping = new Guid("3de5f1a4-d560-4fa8-a74f-25d250fb3401");
+            Guid visibilityLine = new Guid("3efb3c8f-71cb-47b7-bf03-0f752198629e");
+            fixture.Old.Put(grouping, new Parameter(StorageType.String, ""));
+            fixture.Old.get_Parameter(grouping).Definition.Name = "ADSK_Группирование";
+            fixture.Old.Put(visibilityLine, new Parameter(StorageType.Double, 0.0));
+            fixture.Old.get_Parameter(visibilityLine).Definition.Name = "Удлинение линии вверх_вручную";
+            var owned = fixture.Model.Document.Add(new Element { Name = "", Category = null, Location = null });
+            for (int i = 0; i < 7; i++)
+                owned.Put("service-" + i, new Parameter(StorageType.Integer, i) { IsReadOnly = true });
+            fixture.Old.Dependents.Add(owned.Id);
+            fixture.PrepareCreation(item => item.get_Parameter(grouping).Value = "4.Другие элементы систем");
+            fixture.Model.Document.OnRegenerate = () => fixture.New?.get_Parameter(visibilityLine).Set(1000.0 / 304.8);
+            fixture.Model.Document.AfterCommit = _ => fixture.New?.get_Parameter(ReportOffset).Set(-99.0);
+            fixture.Model.Document.NextFailures.Add(new FailureMessageAccessor
+                { Severity = FailureSeverity.Warning, Description = "Duplicate Mark" });
+
+            var report = fixture.Model.Run(fixture.Old);
+
+            Assert.Null(report.Failure);
+            Assert.Equal(1, report.Changed);
+            Assert.Equal(1, report.Recreated);
+            Assert.Empty(report.SkippedIds);
+            Assert.Equal(fixture.Model.Target.Id, fixture.New.LevelId);
+            Assert.Equal(15, ((LocationPoint)fixture.New.Location).Point.Z);
+            Assert.Equal(7, fixture.New.get_Parameter(Width).AsDouble());
+            Assert.Equal("preserved-guid", fixture.New.get_Parameter(GhGuid).AsString());
+            Assert.True(fixture.New.Pinned);
+            Assert.False(owned.IsValidObject);
+            Assert.Contains(fixture.New.Id, ((HostObject)fixture.New.Host).Inserts);
+            Assert.Contains(fixture.New.Host.Id, InstanceVoidCutUtils.GetElementsBeingCut(fixture.New));
+            Assert.Equal("4.Другие элементы систем", fixture.New.get_Parameter(grouping).AsString());
+            Assert.Equal(1000.0 / 304.8, fixture.New.get_Parameter(visibilityLine).AsDouble());
+            Assert.Contains(report.Details, text => text.Contains("Duplicate Mark"));
+            Assert.Contains(report.Details, text => text.Contains("отчётный параметр"));
+            Assert.DoesNotContain(report.Details, text => text.Contains("ADSK_Группирование"));
+        }
+
+        [Theory]
+        [InlineData(false, "report-missing")]
+        [InlineData(true, "report-missing")]
+        [InlineData(false, "base-missing")]
+        [InlineData(true, "base-missing")]
+        [InlineData(false, "report-type")]
+        [InlineData(true, "report-type")]
+        [InlineData(false, "base-type")]
+        [InlineData(true, "base-type")]
+        [InlineData(false, "report-readonly")]
+        [InlineData(true, "report-readonly")]
+        [InlineData(false, "base-readonly")]
+        [InlineData(true, "base-readonly")]
+        [InlineData(false, "report-rejected")]
+        [InlineData(true, "report-rejected")]
+        [InlineData(false, "base-rejected")]
+        [InlineData(true, "base-rejected")]
+        [InlineData(false, "report-throws")]
+        [InlineData(true, "report-throws")]
+        [InlineData(false, "base-throws")]
+        [InlineData(true, "base-throws")]
+        [InlineData(false, "report-overwritten")]
+        [InlineData(true, "report-overwritten")]
+        [InlineData(false, "report-regeneration")]
+        [InlineData(true, "report-regeneration")]
+        [InlineData(false, "report-commit")]
+        [InlineData(true, "report-commit")]
+        [InlineData(false, "native-report-calculation")]
+        [InlineData(true, "native-report-calculation")]
+        public void ReportFieldsCannotCancelASelectedOpeningLevelChange(bool recreate, string damage)
+        {
+            var fixture = new Fixture();
+            fixture.Old.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM).IsReadOnly = recreate;
+            Guid baseHeight = new Guid("9f5f7e49-616e-436f-9acc-5305f34b6933");
+            Guid damagedId = damage.StartsWith("base") ? baseHeight : ReportOffset;
+            Action<FamilyInstance> damageParameter = item =>
+            {
+                var parameter = item.get_Parameter(damagedId);
+                if (damage.EndsWith("missing")) item.Put(damagedId, null);
+                else if (damage.EndsWith("type")) item.Put(damagedId, new Parameter(StorageType.String, "not a length"));
+                else if (damage.EndsWith("readonly")) parameter.IsReadOnly = true;
+                else if (damage.EndsWith("rejected")) parameter.RejectSet = true;
+                else if (damage.EndsWith("throws")) parameter.AfterSet = _ =>
+                {
+                    parameter.Value = -99.0;
+                    throw new InvalidOperationException("family report write rejected");
+                };
+                else if (damage.EndsWith("overwritten")) parameter.AfterSet = _ => parameter.Value = -99.0;
+            };
+            if (recreate) fixture.PrepareCreation(damageParameter);
+            else damageParameter(fixture.Old);
+            Func<FamilyInstance> current = () => recreate ? fixture.New : fixture.Old;
+            if (damage.EndsWith("regeneration"))
+                fixture.Model.Document.OnRegenerate = () => current()?.get_Parameter(ReportOffset).Set(-99.0);
+            if (damage.EndsWith("commit"))
+                fixture.Model.Document.AfterCommit = _ => current()?.get_Parameter(ReportOffset).Set(-99.0);
+            if (damage == "native-report-calculation")
+                fixture.Model.Document.OnRegenerate = () =>
+                {
+                    if (current() != null) current().get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM).Value = double.NaN;
+                };
+
+            var report = fixture.Model.Run(fixture.Old);
+            var target = current();
+
+            Assert.Null(report.Failure);
+            Assert.Equal(1, report.Changed);
+            Assert.Equal(recreate ? 1 : 0, report.Recreated);
+            Assert.Empty(report.SkippedIds);
+            Assert.Equal(fixture.Model.Target.Id, target.LevelId);
+            Assert.Equal(15, ((LocationPoint)target.Location).Point.Z);
+            Assert.Equal(7, target.get_Parameter(Width).AsDouble());
+            Assert.Equal("preserved-guid", target.get_Parameter(GhGuid).AsString());
+            Assert.Contains(target.Id, ((HostObject)target.Host).Inserts);
+            Assert.Contains(report.Details, text => text.Contains("отчёт") && text.Contains("перепривязка выполнена"));
+            Guid otherId = damagedId == ReportOffset ? baseHeight : ReportOffset;
+            Assert.Equal(otherId == ReportOffset ? 5 : 110, target.get_Parameter(otherId).AsDouble());
+            if (damage.EndsWith("overwritten") || damage.EndsWith("regeneration") || damage.EndsWith("commit"))
+                Assert.Contains(report.Details, text => text.Contains("ожидалось") && text.Contains("получено") && text.Contains("мм"));
+        }
+
+        [Theory]
+        [InlineData(false, "point")]
+        [InlineData(true, "point")]
+        [InlineData(false, "dimension")]
+        [InlineData(true, "dimension")]
+        [InlineData(false, "guid")]
+        [InlineData(true, "guid")]
+        [InlineData(false, "cut")]
+        [InlineData(true, "cut")]
+        public void OptionalReportWritesCannotHidePhysicalDamage(bool recreate, string damage)
+        {
+            var fixture = new Fixture();
+            fixture.Old.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM).IsReadOnly = recreate;
+            Action<FamilyInstance> configure = item => item.get_Parameter(ReportOffset).AfterSet = _ =>
+            {
+                item.get_Parameter(ReportOffset).Value = -99.0;
+                if (damage == "point") ((LocationPoint)item.Location).Point += XYZ.BasisZ;
+                if (damage == "dimension") item.get_Parameter(Width).Set(99.0);
+                if (damage == "guid") item.get_Parameter(GhGuid).Set("lost");
+                if (damage == "cut") ((HostObject)item.Host).Inserts.Remove(item.Id);
+                throw new InvalidOperationException("family report write rejected");
+            };
+            if (recreate) fixture.PrepareCreation(configure); else configure(fixture.Old);
+            // Metadata deliberately restores GH_GUID before commit. A later change must still fail.
+            if (damage == "guid") fixture.Model.Document.AfterCommit = name =>
+            {
+                if (name == "Обновить отметки отверстия")
+                    (recreate ? fixture.New : fixture.Old).get_Parameter(GhGuid).Set("lost after metadata");
+            };
+            AssertRestored(fixture, fixture.Model.Run(fixture.Old));
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void FatalRegenerationFromOptionalReportWriteStillAborts(bool recreate)
+        {
+            var fixture = new Fixture();
+            fixture.Old.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM).IsReadOnly = recreate;
+            Action<FamilyInstance> configure = item => item.get_Parameter(ReportOffset).AfterSet = _ =>
+                throw new Autodesk.Revit.Exceptions.RegenerationFailedException("fatal report write");
+            if (recreate) fixture.PrepareCreation(configure); else configure(fixture.Old);
+            var report = fixture.Model.Run(fixture.Old);
+            Assert.NotNull(report.Failure);
+            Assert.Equal(0, report.Changed);
+            Assert.True(fixture.Old.IsValidObject);
+            Assert.Equal(fixture.Model.Original.Id, fixture.Old.LevelId);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void NewReportOffsetSettlesAfterRegenerationWithoutComparingTheOldOffset(bool recreate)
+        {
+            var fixture = new Fixture();
+            fixture.Old.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM).IsReadOnly = recreate;
+            double? pending = null;
+            Action<FamilyInstance> configure = item => item.get_Parameter(ReportOffset).AfterSet = value =>
+            {
+                pending = (double)value;
+                item.get_Parameter(ReportOffset).Value = 15.0; // The old report value persists until regeneration.
+            };
+            if (recreate) fixture.PrepareCreation(configure); else configure(fixture.Old);
+            fixture.Model.Document.OnRegenerate = () =>
+            {
+                if (pending.HasValue)
+                    (recreate ? fixture.New : fixture.Old).get_Parameter(ReportOffset).Value = pending.Value;
+            };
+
+            var report = fixture.Model.Run(fixture.Old);
+            var current = recreate ? fixture.New : fixture.Old;
+
+            Assert.Null(report.Failure);
+            Assert.Equal(1, report.Changed);
+            Assert.Equal(recreate ? 1 : 0, report.Recreated);
+            Assert.Equal(5, current.get_Parameter(ReportOffset).AsDouble());
+            Assert.Equal(5, current.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM).AsDouble());
+            Assert.Equal(15, ((LocationPoint)current.Location).Point.Z);
+            Assert.DoesNotContain(report.Details, text => text.Contains("отчётный параметр"));
+        }
+
         [Fact]
         public void LinkedHeightIsVerifiedAfterTheParameterBatchRegenerates()
         {

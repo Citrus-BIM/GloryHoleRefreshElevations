@@ -19,6 +19,7 @@ namespace GloryHoleRefreshElevations
             new Guid("7fe4f25b-8156-45d4-956f-6cdccf518f70"), new Guid("a841b1f0-1c9a-4c78-80ce-6ca58a8ad564"),
             new Guid("05a963dc-c450-4bf7-b152-5ed10eae7335") };
         private readonly Dictionary<Guid, object> _values = new Dictionary<Guid, object>();
+        private readonly HashSet<Guid> _inactiveHubParameters = new HashSet<Guid>();
         private string _retainedSourceId;
         private readonly HashSet<Guid> _retainedSchemas = new HashSet<Guid>();
         private object _bridge;
@@ -34,9 +35,14 @@ namespace GloryHoleRefreshElevations
             foreach (Guid id in Parameters)
             {
                 Parameter parameter = source.get_Parameter(id);
-                if (parameter == null || !parameter.HasValue) continue;
+                if (parameter == null || !parameter.HasValue)
+                {
+                    if (id != PrimaryGuid) snapshot._inactiveHubParameters.Add(id);
+                    continue;
+                }
                 object value = Read(parameter);
-                snapshot._values.Add(id, value);
+                if (id != PrimaryGuid && IsInactiveHubValue(id, value)) snapshot._inactiveHubParameters.Add(id);
+                else snapshot._values.Add(id, value);
             }
             var schemas = source.GetEntitySchemaGuids();
             if (replacing && schemas.Any(id => !KnownSchemas.Contains(id)))
@@ -62,6 +68,7 @@ namespace GloryHoleRefreshElevations
         internal void Apply(FamilyInstance target)
         {
             VerifyRetainedInstance(target);
+            VerifyInactiveHubParameters(target);
             foreach (var pair in _values)
             {
                 Parameter parameter = target.get_Parameter(pair.Key);
@@ -77,6 +84,7 @@ namespace GloryHoleRefreshElevations
         internal void Verify(FamilyInstance target)
         {
             VerifyRetainedInstance(target);
+            VerifyInactiveHubParameters(target);
             foreach (var pair in _values)
             {
                 Parameter parameter = target.get_Parameter(pair.Key);
@@ -85,6 +93,19 @@ namespace GloryHoleRefreshElevations
                     throw new InvalidOperationException("Служебные идентификаторы отверстия изменились при обработке Revit.");
             }
             if (_bridge != null) Invoke(RequiredMethod("Verify"), _bridge, target);
+        }
+
+        private void VerifyInactiveHubParameters(FamilyInstance target)
+        {
+            foreach (Guid id in _inactiveHubParameters)
+            {
+                Parameter parameter = target.get_Parameter(id);
+                if (parameter == null || !parameter.HasValue) continue;
+                // Empty/default stamps are not a link. Preserve that meaning, not an arbitrary
+                // empty representation; never clear an unexpected real identity to make it match.
+                if (!IsInactiveHubValue(id, Read(parameter)))
+                    throw new InvalidOperationException("В отверстии появилась непредусмотренная служебная связь с Hub: " + id + ".");
+            }
         }
 
         private void VerifyRetainedInstance(FamilyInstance target)
@@ -119,6 +140,15 @@ namespace GloryHoleRefreshElevations
                 return value is string project && Guid.TryParse(project, out Guid parsed) && parsed != Guid.Empty;
             return value is int number ? number > 0 : int.TryParse(value as string,
                 NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedNumber) && parsedNumber > 0;
+        }
+
+        private static bool IsInactiveHubValue(Guid id, object value)
+        {
+            if (value is string text && string.IsNullOrWhiteSpace(text)) return true;
+            if (id == Parameters[1])
+                return value is string project && Guid.TryParse(project, out Guid parsed) && parsed == Guid.Empty;
+            return value is int number ? number <= 0 : int.TryParse(value as string,
+                NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedNumber) && parsedNumber <= 0;
         }
 
         private static object CaptureBridge(FamilyInstance source)

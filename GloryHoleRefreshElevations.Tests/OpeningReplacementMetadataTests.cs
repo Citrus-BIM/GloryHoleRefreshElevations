@@ -8,6 +8,109 @@ namespace GloryHoleRefreshElevations.Tests
     {
         private static readonly Guid GhGuid = new Guid("652cfdd0-f868-4433-8fbd-16a517e1b878");
         private static readonly Guid ProjectGuid = new Guid("8b5f2c01-9ad4-4e2f-b8c7-1d0e3a5b7c9d");
+        private static readonly Guid[] HubGuids = {
+            ProjectGuid, new Guid("9c603d12-0be5-5f3a-c9d8-2e1f4b6c8d0e"),
+            new Guid("0d714e23-1cf6-6a4b-d0e9-3f2a5c7d9e1f"), new Guid("1e825f34-2da7-7b5c-e1fa-4a3b6d8e0f2a") };
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void InactiveHubStampsDoNotBlockEquivalentEmptyValues(bool replacing)
+        {
+            foreach (Guid id in HubGuids)
+                foreach (string state in new[] { "missing", "unset", "blank", "zero", "readonly-zero" })
+                {
+                    var source = New("old");
+                    source.Put(GhGuid, new Parameter(StorageType.String, "preserved-guid"));
+                    source.Put(id, new Parameter(StorageType.String, ""));
+                    var snapshot = OpeningReplacementMetadata.Capture(source,
+                        _ => throw new Exception("An inactive Hub must not load Cutter"), replacing);
+                    var target = replacing ? New("new") : source;
+                    target.Put(GhGuid, new Parameter(StorageType.String, "preserved-guid"));
+                    Parameter empty = state == "missing" ? null : state == "unset"
+                        ? new Parameter(StorageType.String, null) : state == "blank"
+                        ? new Parameter(StorageType.String, "  ") : id == ProjectGuid
+                        ? new Parameter(StorageType.String, Guid.Empty.ToString()) : new Parameter(StorageType.Integer, 0);
+                    if (state == "readonly-zero") empty.IsReadOnly = true;
+                    target.Put(id, empty);
+
+                    snapshot.Apply(target);
+                    snapshot.Verify(target);
+
+                    Assert.Equal("preserved-guid", target.get_Parameter(GhGuid).AsString());
+                    Assert.Null(snapshot.AfterCommit);
+                }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void AbsentHubStampsCannotAcquireAnUnexpectedActiveIdentity(bool originallyMissing)
+        {
+            foreach (Guid id in HubGuids)
+            {
+                var source = New("old");
+                if (!originallyMissing) source.Put(id, new Parameter(StorageType.String, ""));
+                var snapshot = OpeningReplacementMetadata.Capture(source,
+                    _ => throw new Exception("An inactive Hub must not load Cutter"));
+                var target = New("new");
+                target.Put(id, id == ProjectGuid ? new Parameter(StorageType.String, Guid.NewGuid().ToString())
+                    : new Parameter(StorageType.Integer, 42));
+
+                Assert.Throws<InvalidOperationException>(() => snapshot.Apply(target));
+                Assert.Throws<InvalidOperationException>(() => snapshot.Verify(target));
+                Assert.Equal(id == ProjectGuid ? StorageType.String : StorageType.Integer, target.get_Parameter(id).StorageType);
+                if (id != ProjectGuid) Assert.Equal(42, target.get_Parameter(id).AsInteger());
+            }
+        }
+
+        [Theory]
+        [InlineData("0")]
+        [InlineData("-1")]
+        [InlineData(" +0 ")]
+        public void InactiveNumericHubIdsAreEquivalentToMissingValues(string oldValue)
+        {
+            for (int i = 1; i < HubGuids.Length; i++)
+            {
+                var source = New("old");
+                source.Put(HubGuids[i], new Parameter(StorageType.String, oldValue));
+                var snapshot = OpeningReplacementMetadata.Capture(source,
+                    _ => throw new Exception("An inactive Hub must not load Cutter"));
+                var target = New("new");
+                snapshot.Apply(target);
+                snapshot.Verify(target);
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void InactiveHubStampsDoNotHideMalformedReplacementValues(bool wrongStorage)
+        {
+            var source = New("old"); source.Put(ProjectGuid, new Parameter(StorageType.String, ""));
+            var snapshot = OpeningReplacementMetadata.Capture(source);
+            var target = New("new");
+            target.Put(ProjectGuid, wrongStorage ? new Parameter(StorageType.Double, 1.5)
+                : new Parameter(StorageType.String, "unrecognized project stamp"));
+            Assert.Throws<InvalidOperationException>(() => snapshot.Apply(target));
+            Assert.Throws<InvalidOperationException>(() => snapshot.Verify(target));
+        }
+
+        [Fact]
+        public void InactiveHubEquivalenceDoesNotRelaxGhGuidOrActiveHubStamps()
+        {
+            var source = New("old");
+            source.Put(GhGuid, new Parameter(StorageType.String, ""));
+            var target = New("new"); target.Put(GhGuid, new Parameter(StorageType.String, "new-guid") { IsReadOnly = true });
+            var snapshot = OpeningReplacementMetadata.Capture(source);
+            Assert.Throws<InvalidOperationException>(() => snapshot.Apply(target));
+            Assert.Throws<InvalidOperationException>(() => snapshot.Verify(target));
+
+            source = New("active"); source.Put(HubGuids[1], new Parameter(StorageType.Integer, 42));
+            target = New("replacement"); target.Put(HubGuids[1], new Parameter(StorageType.String, "42"));
+            snapshot = OpeningReplacementMetadata.Capture(source, _ => new BridgeSnapshot());
+            Assert.Throws<InvalidOperationException>(() => snapshot.Apply(target));
+        }
 
         [Fact]
         public void PlainOpeningPreservesGhGuidWithoutLookingForCutter()

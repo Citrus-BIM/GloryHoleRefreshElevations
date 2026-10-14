@@ -136,7 +136,7 @@ namespace GloryHoleRefreshElevations.Tests
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
-        public void FormulaReportFieldsMustMatchAfterDirectLevelChange(bool correct)
+        public void FormulaReportFieldsCannotBlockDirectLevelChange(bool correct)
         {
             var model = new Model();
             var item = model.Create("wall");
@@ -154,10 +154,13 @@ namespace GloryHoleRefreshElevations.Tests
             var report = model.Run(item);
 
             Assert.Null(report.Failure);
-            Assert.Equal(correct ? 1 : 0, report.Changed);
-            Assert.Equal(correct ? model.Target.Id : model.Original.Id, item.LevelId);
+            Assert.Equal(1, report.Changed);
+            Assert.Equal(model.Target.Id, item.LevelId);
             Assert.Equal(correct ? 5 : 15, item.get_Parameter(ReportOffset).AsDouble());
             Assert.Equal(correct ? 110 : 100, item.get_Parameter(BaseHeight).AsDouble());
+            Assert.Equal(15, ((LocationPoint)item.Location).Point.Z);
+            Assert.Empty(report.SkippedIds);
+            if (!correct) Assert.Contains(report.Details, text => text.Contains("отчётный параметр"));
         }
 
         [Theory]

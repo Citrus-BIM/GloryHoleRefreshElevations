@@ -117,10 +117,11 @@ namespace Autodesk.Revit.DB
         public bool HasValue => Value != null;
         public bool RejectSet { get; set; }
         public Action<object> AfterSet { get; set; }
-        public double AsDouble() => Convert.ToDouble(Value);
-        public int AsInteger() => Convert.ToInt32(Value);
-        public string AsString() => Value as string;
-        public ElementId AsElementId() => (ElementId)Value;
+        public Action BeforeRead { get; set; }
+        public double AsDouble() { BeforeRead?.Invoke(); return Convert.ToDouble(Value); }
+        public int AsInteger() { BeforeRead?.Invoke(); return Convert.ToInt32(Value); }
+        public string AsString() { BeforeRead?.Invoke(); return Value as string; }
+        public ElementId AsElementId() { BeforeRead?.Invoke(); return (ElementId)Value; }
         public bool Set(double value) => SetValue(value);
         public bool Set(int value) => SetValue(value);
         public bool Set(string value) => SetValue(value);

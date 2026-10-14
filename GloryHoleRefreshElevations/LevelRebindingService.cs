@@ -96,7 +96,7 @@ namespace GloryHoleRefreshElevations
                         {
                             if (!selectedScope || !manual || manualLevel == null)
                                 report.Skip(source.Id, "Для готового отверстия нужны выбранные элементы и явно выбранный уровень", source.Name);
-                            else ProcessOpening(doc, instance, manualLevel, refresh, report, afterCommit, completedDetails,
+                            else ProcessOpening(doc, instance, manualLevel, report, afterCommit, completedDetails,
                                 captureMetadata);
                         }
                         else if (rebind)
@@ -170,7 +170,7 @@ namespace GloryHoleRefreshElevations
         }
 
         private static void ProcessOpening(Document doc, FamilyInstance instance,
-            Level target, Action<FamilyInstance> refresh, RebindReport report, List<Action> afterCommit,
+            Level target, RebindReport report, List<Action> afterCommit,
             List<string> completedDetails, Func<FamilyInstance, OpeningReplacementMetadata>? captureMetadata)
         {
             // Hosted openings cannot use the free task's placement offset or its slab correction.
@@ -203,7 +203,6 @@ namespace GloryHoleRefreshElevations
                     if (oldLevel != null ? !oldLevel.Id.Equals(instance.LevelId)
                         : !instance.LevelId.Equals(ElementId.InvalidElementId))
                         throw new SkipException("Параметры исходного уровня противоречат друг другу");
-                    OpeningElevationService.ValidateParameters(instance);
                     var before = PlacementSnapshot.Capture(instance);
                     var relations = OpeningRelationsSnapshot.Capture(instance);
                     bool changed = oldLevel == null || !oldLevel.Id.Equals(target.Id);
@@ -257,20 +256,20 @@ namespace GloryHoleRefreshElevations
                         VerifyOpening(instance, target, before, relations, false, false);
                     }
 
+                    OpeningElevationService.ReportUpdate? reportUpdate = null;
                     RunTransaction(doc, "Обновить отметки отверстия", () =>
                     {
-                        refresh(instance);
+                        reportUpdate = OpeningElevationService.RefreshReportsForRebind(instance);
                         doc.Regenerate();
                         metadata?.Apply(instance);
                         replacement?.Verify(instance);
                         VerifyOpening(instance, target, before, relations, false, false, recreate);
-                        OpeningElevationService.VerifyReports(instance, profile, target);
                         metadata?.Verify(instance);
                     }, false, warnings);
                     replacement?.Verify(instance);
                     VerifyOpening(instance, target, before, relations, false, false, recreate);
-                    OpeningElevationService.VerifyReports(instance, profile, target);
                     metadata?.Verify(instance);
+                    var reportNotes = reportUpdate!.GetNotes();
                     var callback = metadata?.AfterCommit;
                     var warning = metadata?.Warning;
                     if (item.Assimilate() != TransactionStatus.Committed)
@@ -287,6 +286,8 @@ namespace GloryHoleRefreshElevations
                                 + string.Join(" ", replacement.TransferNotes));
                     }
                     if (!string.IsNullOrWhiteSpace(warning)) completedDetails.Add("ID " + instance.Id + ": " + warning);
+                    foreach (var note in reportNotes)
+                        completedDetails.Add("ID " + instance.Id + ": перепривязка выполнена. " + note);
                     foreach (var message in warnings)
                         completedDetails.Add("ID " + instance.Id + ": перепривязка выполнена. Предупреждение Revit: " + message);
                     if (callback != null) afterCommit.Add(callback);

@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using Autodesk.Revit.DB;
 
 namespace GloryHoleRefreshElevations
@@ -97,6 +99,87 @@ namespace GloryHoleRefreshElevations
             Parameter baseHeight = instance.get_Parameter(BaseHeight);
             if (baseHeight != null && !Near(ReadDouble(baseHeight, BaseHeightName), level.Elevation))
                 throw new InvalidOperationException("Записанная отметка базового уровня отверстия не соответствует уровню.");
+        }
+
+        // Selected-opening rebinding owns placement, dimensions, identity and cut validation.
+        // Reporting fields are a separate, optional update and must never move the opening.
+        // Keep Refresh/VerifyReports strict for the standalone elevation-update command.
+        internal static ReportUpdate RefreshReportsForRebind(FamilyInstance instance)
+        {
+            var update = new ReportUpdate(instance);
+            update.Write();
+            return update;
+        }
+
+        internal sealed class ReportUpdate
+        {
+            private readonly FamilyInstance instance;
+            private readonly Dictionary<Guid, string> writeErrors = new Dictionary<Guid, string>();
+
+            internal ReportUpdate(FamilyInstance instance) { this.instance = instance; }
+
+            internal void Write()
+            {
+                // A missing or formula-controlled field must not prevent the other field updating.
+                TryWrite(BaseHeight, BaseHeightName);
+                TryWrite(ReportOffset, ReportOffsetName);
+            }
+
+            private void TryWrite(Guid id, string name)
+            {
+                try
+                {
+                    if (CanOmit(id)) return;
+                    WriteDouble(instance.get_Parameter(id), name, Expected(id), true);
+                }
+                catch (Autodesk.Revit.Exceptions.RegenerationFailedException) { throw; }
+                catch (Exception ex) { writeErrors[id] = ex.Message; }
+            }
+
+            // Read after regeneration AND commit. A temporary linked/formula value which settles
+            // correctly produces no warning; persistent report-only differences remain informational.
+            internal IReadOnlyList<string> GetNotes()
+            {
+                var notes = new List<string>();
+                Inspect(BaseHeight, BaseHeightName, notes);
+                Inspect(ReportOffset, ReportOffsetName, notes);
+                return notes;
+            }
+
+            private void Inspect(Guid id, string name, ICollection<string> notes)
+            {
+                try
+                {
+                    if (CanOmit(id)) return;
+                    double expected = Expected(id);
+                    double actual = ReadDouble(instance.get_Parameter(id), name);
+                    if (Near(actual, expected)) return;
+                    string detail = "ожидалось " + Millimetres(expected) + " мм, получено " + Millimetres(actual) + " мм";
+                    if (writeErrors.TryGetValue(id, out string error)) detail += ". " + error;
+                    notes.Add("Не обновлён отчётный параметр «" + name + "»: " + detail + ".");
+                }
+                catch (Autodesk.Revit.Exceptions.RegenerationFailedException) { throw; }
+                catch (Exception ex)
+                {
+                    notes.Add("Не обновлён отчётный параметр «" + name + "»: " + ex.Message);
+                }
+            }
+
+            private bool CanOmit(Guid id) => id == BaseHeight && instance.get_Parameter(id) == null
+                && instance.Category?.Id.Equals(new ElementId(BuiltInCategory.OST_Windows)) == true;
+
+            private double Expected(Guid id)
+            {
+                var level = instance.Document.GetElement(instance.LevelId) as Level;
+                if (level == null || !level.IsValidObject)
+                    throw new InvalidOperationException("Не задан уровень для расчёта отчётной отметки.");
+                if (id == ReportOffset) return GetReportOffset(instance, GetProfile(instance), level);
+                if (!IsFinite(level.Elevation))
+                    throw new InvalidOperationException("Некорректная отметка базового уровня отверстия.");
+                return level.Elevation;
+            }
+
+            private static string Millimetres(double value) => (value * 304.8).ToString("0.###", CultureInfo.CurrentCulture);
         }
 
         private static RebindTaskProfile RequireProfile(FamilyInstance instance)
