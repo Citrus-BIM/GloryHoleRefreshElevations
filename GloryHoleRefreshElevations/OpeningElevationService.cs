@@ -25,12 +25,12 @@ namespace GloryHoleRefreshElevations
         public static void ValidateParameters(FamilyInstance instance)
         {
             RequireProfile(instance);
-            WritableDouble(instance.get_Parameter(ReportOffset), ReportOffsetName);
+            RequiredDouble(instance.get_Parameter(ReportOffset), ReportOffsetName);
             Parameter baseHeight = instance.get_Parameter(BaseHeight);
             bool window = instance.Category != null
                 && instance.Category.Id.Equals(new ElementId(BuiltInCategory.OST_Windows));
             if (baseHeight != null || !window)
-                WritableDouble(baseHeight, BaseHeightName);
+                RequiredDouble(baseHeight, BaseHeightName);
         }
 
         public static double GetReportOffset(FamilyInstance instance, RebindTaskProfile profile, Level level)
@@ -83,8 +83,8 @@ namespace GloryHoleRefreshElevations
                 offset = GetReportOffset(instance, profile, level);
             }
 
-            if (baseHeight != null) WriteDouble(baseHeight, BaseHeightName, level.Elevation);
-            WriteDouble(instance.get_Parameter(ReportOffset), ReportOffsetName, offset);
+            if (baseHeight != null) WriteDouble(baseHeight, BaseHeightName, level.Elevation, true);
+            WriteDouble(instance.get_Parameter(ReportOffset), ReportOffsetName, offset, true);
             VerifyReports(instance, profile, level);
         }
 
@@ -147,12 +147,16 @@ namespace GloryHoleRefreshElevations
             return parameter.AsDouble();
         }
 
-        private static void WriteDouble(Parameter parameter, string name, double value)
+        private static void WriteDouble(Parameter parameter, string name, double value, bool allowReadonlyEquivalent = false)
         {
-            WritableDouble(parameter, name);
+            RequiredDouble(parameter, name);
             if (!IsFinite(value))
                 throw new InvalidOperationException("Некорректное значение для параметра «" + name + "».");
-            if (parameter.HasValue && parameter.AsDouble().Equals(value)) return;
+            // Formula-driven report values may already be correct after regeneration.
+            // No write is needed in that case, even when Revit marks the parameter read-only.
+            if (parameter.HasValue && (parameter.AsDouble().Equals(value)
+                || (allowReadonlyEquivalent && parameter.IsReadOnly && Near(parameter.AsDouble(), value)))) return;
+            WritableDouble(parameter, name);
             if (!parameter.Set(value))
                 throw new InvalidOperationException("Revit не принял значение параметра «" + name + "».");
         }

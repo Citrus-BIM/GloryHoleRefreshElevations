@@ -97,7 +97,7 @@ namespace GloryHoleRefreshElevations
                             if (!selectedScope || !manual || manualLevel == null)
                                 report.Skip(source.Id, "Для готового отверстия нужны выбранные элементы и явно выбранный уровень", source.Name);
                             else ProcessOpening(doc, instance, manualLevel, refresh, report, afterCommit, completedDetails,
-                                captureMetadata ?? OpeningReplacementMetadata.Capture);
+                                captureMetadata);
                         }
                         else if (rebind)
                             ProcessInstance(doc, instance, levels, manualLevel, refresh,
@@ -171,11 +171,12 @@ namespace GloryHoleRefreshElevations
 
         private static void ProcessOpening(Document doc, FamilyInstance instance,
             Level target, Action<FamilyInstance> refresh, RebindReport report, List<Action> afterCommit,
-            List<string> completedDetails, Func<FamilyInstance, OpeningReplacementMetadata> captureMetadata)
+            List<string> completedDetails, Func<FamilyInstance, OpeningReplacementMetadata>? captureMetadata)
         {
             // Hosted openings cannot use the free task's placement offset or its slab correction.
             ElementId originalId = instance.Id;
             string originalName = instance.Name;
+            var warnings = new HashSet<string>(StringComparer.Ordinal);
             using (var item = new TransactionGroup(doc, "Перепривязка отверстия"))
             {
                 RequireStarted(item.Start());
@@ -207,8 +208,9 @@ namespace GloryHoleRefreshElevations
                     var relations = OpeningRelationsSnapshot.Capture(instance);
                     bool changed = oldLevel == null || !oldLevel.Id.Equals(target.Id);
                     bool recreate = changed && nativeLevel.IsReadOnly;
-                    if (changed && instance.Pinned && !recreate) throw new SkipException("Элемент закреплён");
-                    var metadata = changed ? captureMetadata(instance) : null;
+                    bool wasPinned = instance.Pinned;
+                    var metadata = changed ? (captureMetadata != null ? captureMetadata(instance)
+                        : OpeningReplacementMetadata.Capture(instance, recreate)) : null;
                     OpeningReplacementSnapshot? replacement = null;
                     if (recreate)
                     {
@@ -223,7 +225,7 @@ namespace GloryHoleRefreshElevations
                             doc.Regenerate();
                             replacement.Verify(instance);
                             VerifyOpening(instance, target, before, relations, false, false, true);
-                        });
+                        }, false, warnings);
                         replacement.Verify(instance);
                         VerifyOpening(instance, target, before, relations, false, false, true);
                     }
@@ -235,6 +237,7 @@ namespace GloryHoleRefreshElevations
                                 || Near(oldLevel.ProjectElevation + offset.AsDouble(), before.Point.Z));
                         RunTransaction(doc, "Перепривязать отверстие к уровню", () =>
                         {
+                            if (wasPinned) instance.Pinned = false;
                             if (!nativeLevel.Set(target.Id) && !nativeLevel.AsElementId().Equals(target.Id))
                                 throw new SkipException("Revit отклонил изменение уровня");
                             // Set both values before regeneration: the intermediate position may be outside the host.
@@ -248,8 +251,9 @@ namespace GloryHoleRefreshElevations
                                     throw new SkipException("Revit отклонил изменение смещения");
                             }
                             doc.Regenerate();
+                            if (wasPinned) instance.Pinned = true;
                             VerifyOpening(instance, target, before, relations, false, false);
-                        });
+                        }, false, warnings);
                         VerifyOpening(instance, target, before, relations, false, false);
                     }
 
@@ -262,7 +266,7 @@ namespace GloryHoleRefreshElevations
                         VerifyOpening(instance, target, before, relations, false, false, recreate);
                         OpeningElevationService.VerifyReports(instance, profile, target);
                         metadata?.Verify(instance);
-                    });
+                    }, false, warnings);
                     replacement?.Verify(instance);
                     VerifyOpening(instance, target, before, relations, false, false, recreate);
                     OpeningElevationService.VerifyReports(instance, profile, target);
@@ -283,6 +287,8 @@ namespace GloryHoleRefreshElevations
                                 + string.Join(" ", replacement.TransferNotes));
                     }
                     if (!string.IsNullOrWhiteSpace(warning)) completedDetails.Add("ID " + instance.Id + ": " + warning);
+                    foreach (var message in warnings)
+                        completedDetails.Add("ID " + instance.Id + ": перепривязка выполнена. Предупреждение Revit: " + message);
                     if (callback != null) afterCommit.Add(callback);
                 }
                 catch (Autodesk.Revit.Exceptions.RegenerationFailedException) { throw; }
@@ -506,7 +512,8 @@ namespace GloryHoleRefreshElevations
                 throw new InvalidOperationException("Не удалось начать транзакцию.");
         }
 
-        private static void RunTransaction(Document doc, string name, Action action, bool rollbackWarnings = true)
+        private static void RunTransaction(Document doc, string name, Action action, bool rollbackWarnings = true,
+            ICollection<string>? warnings = null)
         {
             using (var transaction = new Transaction(doc, name))
             {
@@ -524,6 +531,8 @@ namespace GloryHoleRefreshElevations
                         throw new SkipException(failures.Reason ?? "Транзакция элемента отменена");
                     if (status != TransactionStatus.Committed)
                         throw new TransactionStateException("Revit не завершил обработку транзакции.");
+                    if (warnings != null)
+                        foreach (var warning in failures.Warnings) warnings.Add(warning);
                 }
                 catch (Autodesk.Revit.Exceptions.RegenerationFailedException) { throw; }
                 catch
@@ -542,13 +551,17 @@ namespace GloryHoleRefreshElevations
             public RollbackOnFailure(bool rollbackWarnings) { this.rollbackWarnings = rollbackWarnings; }
             public string? Reason { get; private set; }
             public bool DocumentCorruption { get; private set; }
+            public HashSet<string> Warnings { get; } = new HashSet<string>(StringComparer.Ordinal);
             public FailureProcessingResult PreprocessFailures(FailuresAccessor accessor)
             {
                 var messages = accessor.GetFailureMessages();
+                foreach (var message in messages.Where(m => m.GetSeverity() == FailureSeverity.Warning))
+                    Warnings.Add(message.GetDescriptionText());
                 DocumentCorruption = messages.Any(m => m.GetSeverity() == FailureSeverity.DocumentCorruption);
                 var failure = messages.FirstOrDefault(m => rollbackWarnings || m.GetSeverity() != FailureSeverity.Warning);
                 if (failure == null) return FailureProcessingResult.Continue;
-                // Ordinary refresh retains normal warning handling; rebind never accepts corrective geometry changes.
+                // Finished-opening changes retain normal warning handling. Their placement,
+                // dimensions, identity and cuts are checked again after commit before assimilation.
                 Reason = "Сообщение Revit: " + failure.GetDescriptionText();
                 return FailureProcessingResult.ProceedWithRollBack;
             }

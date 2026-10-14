@@ -544,7 +544,6 @@ namespace GloryHoleRefreshElevations.Tests
 
         [Theory]
         [InlineData(FailureSeverity.Error)]
-        [InlineData(FailureSeverity.Warning)]
         public void RevitFailureRestoresOriginalAndItsAnnotations(FailureSeverity severity)
         {
             var fixture = new Fixture();
@@ -555,6 +554,64 @@ namespace GloryHoleRefreshElevations.Tests
             AssertRestored(fixture, fixture.Model.Run(fixture.Old));
             Assert.True(annotation.IsValidObject);
             Assert.NotNull(fixture.New);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void WarningAloneDoesNotCancelAValidOpeningLevelChange(bool recreate)
+        {
+            var fixture = new Fixture();
+            fixture.Old.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM).IsReadOnly = recreate;
+            fixture.PrepareCreation();
+            fixture.Model.Document.NextFailures.Add(new FailureMessageAccessor
+                { Severity = FailureSeverity.Warning, Description = "Duplicate Mark" });
+            var report = fixture.Model.Run(fixture.Old);
+
+            Assert.Null(report.Failure);
+            Assert.Equal(1, report.Changed);
+            Assert.Equal(recreate ? 1 : 0, report.Recreated);
+            Assert.Empty(report.SkippedIds);
+            Assert.Contains(report.Details, text => text.Contains("Duplicate Mark"));
+        }
+
+        [Theory]
+        [InlineData("point")]
+        [InlineData("dimension")]
+        [InlineData("guid")]
+        [InlineData("cut")]
+        public void WarningCannotHideDamageToTheRecreatedOpening(string damage)
+        {
+            var fixture = new Fixture(); fixture.PrepareCreation();
+            fixture.Model.Document.NextFailures.Add(new FailureMessageAccessor
+                { Severity = FailureSeverity.Warning, Description = "warning with damage" });
+            bool committedBeforeValidation = false;
+            fixture.Model.Document.AfterCommit = _ =>
+            {
+                committedBeforeValidation = true;
+                switch (damage)
+                {
+                    case "point": ((LocationPoint)fixture.New.Location).Point += XYZ.BasisZ; break;
+                    case "dimension": fixture.New.get_Parameter(Width).Set(99.0); break;
+                    case "guid": fixture.New.get_Parameter(GhGuid).Set("lost"); break;
+                    case "cut": ((HostObject)fixture.New.Host).Inserts.Remove(fixture.New.Id); break;
+                }
+            };
+            AssertRestored(fixture, fixture.Model.Run(fixture.Old));
+            Assert.True(committedBeforeValidation);
+        }
+
+        [Fact]
+        public void RecreatingOpeningStillRejectsUnknownStorageBeforeDeletion()
+        {
+            var fixture = new Fixture(); fixture.PrepareCreation();
+            var schema = Guid.NewGuid();
+            fixture.Old.EntitySchemaGuids.Add(schema);
+            var report = fixture.Model.Run(fixture.Old);
+            AssertRestored(fixture, report);
+            Assert.Null(fixture.New);
+            Assert.Contains(schema, fixture.Old.EntitySchemaGuids);
+            Assert.Contains(report.Details, text => text.Contains("неизвестные служебные данные"));
         }
 
         [Fact]

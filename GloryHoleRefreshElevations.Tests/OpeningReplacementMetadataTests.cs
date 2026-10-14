@@ -102,6 +102,46 @@ namespace GloryHoleRefreshElevations.Tests
         }
 
         [Fact]
+        public void DirectLevelMetadataLeavesUnknownSchemaWithoutLoadingCutter()
+        {
+            var source = New("old");
+            source.EntitySchemaGuids.Add(Guid.NewGuid());
+            var snapshot = OpeningReplacementMetadata.Capture(source,
+                _ => throw new Exception("Unknown storage must not load Cutter"), false);
+            snapshot.Apply(source);
+            snapshot.Verify(source);
+            Assert.Null(snapshot.AfterCommit);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void DirectLevelMetadataCannotBeAppliedToReplacementOrLoseUnknownSchema(bool removeSchema)
+        {
+            var source = New("old"); var target = removeSchema ? source : New("new");
+            var schema = Guid.NewGuid();
+            source.EntitySchemaGuids.Add(schema);
+            var snapshot = OpeningReplacementMetadata.Capture(source, _ => null, false);
+            if (removeSchema) source.EntitySchemaGuids.Clear();
+            else target.EntitySchemaGuids.Add(schema);
+            Assert.Throws<InvalidOperationException>(() => snapshot.Apply(target));
+            Assert.Throws<InvalidOperationException>(() => snapshot.Verify(target));
+        }
+
+        [Fact]
+        public void DirectLevelMetadataStillRefreshesKnownCutterDataAlongsideUnknownSchema()
+        {
+            var source = New("old");
+            source.EntitySchemaGuids.Add(Guid.NewGuid());
+            source.EntitySchemaGuids.Add(new Guid("a841b1f0-1c9a-4c78-80ce-6ca58a8ad564"));
+            var bridge = new BridgeSnapshot();
+            var snapshot = OpeningReplacementMetadata.Capture(source, _ => bridge, false);
+            snapshot.Apply(source); snapshot.Verify(source);
+            Assert.Equal(1, bridge.Applied);
+            Assert.Equal(1, bridge.Verified);
+        }
+
+        [Fact]
         public void OutdatedBridgeContractIsRejectedBeforeDeletion()
         {
             var source = New("old"); source.EntitySchemaGuids.Add(new Guid("7fe4f25b-8156-45d4-956f-6cdccf518f70"));

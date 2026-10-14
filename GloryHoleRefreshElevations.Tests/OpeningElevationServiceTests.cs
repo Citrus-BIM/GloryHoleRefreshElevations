@@ -102,9 +102,28 @@ namespace GloryHoleRefreshElevations.Tests
                 : new Parameter(damage.EndsWith("type") ? StorageType.String : StorageType.Double,
                     damage.EndsWith("type") ? (object)"not a length" : -99.0)
                     { IsReadOnly = damage.EndsWith("readonly") });
-            Assert.Throws<InvalidOperationException>(() => OpeningElevationService.ValidateParameters(model.Item));
+            if (damage.EndsWith("readonly")) OpeningElevationService.ValidateParameters(model.Item);
+            else Assert.Throws<InvalidOperationException>(() => OpeningElevationService.ValidateParameters(model.Item));
             Assert.Throws<InvalidOperationException>(() => model.Refresh());
             Assert.Equal(5, model.NativeOffset.AsDouble());
+            Assert.Equal(15, model.Point.Z);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void CorrectReadonlyReportFieldsDoNotNeedToBeWritten(bool window)
+        {
+            var model = new Model(window: window);
+            model.Report.Value = 5.0;
+            model.Report.IsReadOnly = true;
+            if (model.Base != null)
+            {
+                model.Base.Value = 110.0;
+                model.Base.IsReadOnly = true;
+            }
+            model.Refresh();
+            OpeningElevationService.VerifyReports(model.Item, RebindTaskProfile.WallRectangular, model.Level);
             Assert.Equal(15, model.Point.Z);
         }
 

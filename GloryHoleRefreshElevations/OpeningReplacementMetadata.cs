@@ -19,10 +19,15 @@ namespace GloryHoleRefreshElevations
             new Guid("7fe4f25b-8156-45d4-956f-6cdccf518f70"), new Guid("a841b1f0-1c9a-4c78-80ce-6ca58a8ad564"),
             new Guid("05a963dc-c450-4bf7-b152-5ed10eae7335") };
         private readonly Dictionary<Guid, object> _values = new Dictionary<Guid, object>();
+        private string _retainedSourceId;
+        private readonly HashSet<Guid> _retainedSchemas = new HashSet<Guid>();
         private object _bridge;
 
         internal static OpeningReplacementMetadata Capture(FamilyInstance source) => Capture(source, CaptureBridge);
-        internal static OpeningReplacementMetadata Capture(FamilyInstance source, Func<FamilyInstance, object> captureBridge)
+        internal static OpeningReplacementMetadata Capture(FamilyInstance source, bool replacing)
+            => Capture(source, CaptureBridge, replacing);
+        internal static OpeningReplacementMetadata Capture(FamilyInstance source, Func<FamilyInstance, object> captureBridge,
+            bool replacing = true)
         {
             if (source == null || !source.IsValidObject) throw new InvalidOperationException("Исходное отверстие недоступно.");
             var snapshot = new OpeningReplacementMetadata();
@@ -34,10 +39,17 @@ namespace GloryHoleRefreshElevations
                 snapshot._values.Add(id, value);
             }
             var schemas = source.GetEntitySchemaGuids();
-            if (schemas.Any(id => !KnownSchemas.Contains(id)))
+            if (replacing && schemas.Any(id => !KnownSchemas.Contains(id)))
                 throw new InvalidOperationException("У отверстия есть неизвестные служебные данные. Безопасный перенос не поддерживается.");
+            // A direct level change does not delete the element or transfer its unknown data.
+            // Keep that path tied to the original instance; known Cutter signatures still refresh.
+            if (!replacing)
+            {
+                snapshot._retainedSourceId = source.UniqueId;
+                snapshot._retainedSchemas.UnionWith(schemas.Where(id => !KnownSchemas.Contains(id)));
+            }
             // GH_GUID alone is local identity. Do not even look up Cutter for an ordinary opening.
-            if (schemas.Count > 0 || snapshot._values.Any(pair => HasHubIdentity(pair.Key, pair.Value)))
+            if (schemas.Any(KnownSchemas.Contains) || snapshot._values.Any(pair => HasHubIdentity(pair.Key, pair.Value)))
             {
                 snapshot._bridge = captureBridge(source);
                 if (snapshot._bridge == null)
@@ -49,6 +61,7 @@ namespace GloryHoleRefreshElevations
 
         internal void Apply(FamilyInstance target)
         {
+            VerifyRetainedInstance(target);
             foreach (var pair in _values)
             {
                 Parameter parameter = target.get_Parameter(pair.Key);
@@ -63,6 +76,7 @@ namespace GloryHoleRefreshElevations
 
         internal void Verify(FamilyInstance target)
         {
+            VerifyRetainedInstance(target);
             foreach (var pair in _values)
             {
                 Parameter parameter = target.get_Parameter(pair.Key);
@@ -71,6 +85,14 @@ namespace GloryHoleRefreshElevations
                     throw new InvalidOperationException("Служебные идентификаторы отверстия изменились при обработке Revit.");
             }
             if (_bridge != null) Invoke(RequiredMethod("Verify"), _bridge, target);
+        }
+
+        private void VerifyRetainedInstance(FamilyInstance target)
+        {
+            if (_retainedSourceId == null) return;
+            if (target == null || !target.IsValidObject || target.UniqueId != _retainedSourceId
+                || !_retainedSchemas.IsSubsetOf(target.GetEntitySchemaGuids()))
+                throw new InvalidOperationException("При смене уровня изменился исходный экземпляр или его служебные данные.");
         }
 
         internal Action AfterCommit => _bridge == null ? null :

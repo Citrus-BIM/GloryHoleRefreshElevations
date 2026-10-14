@@ -62,7 +62,6 @@ namespace GloryHoleRefreshElevations.Tests
 
         [Theory]
         [InlineData("missing-host")]
-        [InlineData("pinned")]
         [InlineData("rejected-level-set")]
         [InlineData("level-id-not-changed")]
         public void UnsupportedOpeningIsSkippedWithoutChangingGeometryOrReports(string condition)
@@ -86,6 +85,79 @@ namespace GloryHoleRefreshElevations.Tests
             Assert.Equal(15, item.get_Parameter(ReportOffset).AsDouble());
             Assert.Equal(0, refreshCalls);
             Assert.Equal(condition == "pinned", item.Pinned);
+        }
+
+        [Fact]
+        public void DirectLevelChangePreservesUnknownStorageOnTheSameOpening()
+        {
+            var model = new Model();
+            var item = model.Create("wall");
+            var schema = Guid.NewGuid();
+            item.EntitySchemaGuids.Add(schema);
+            var originalId = item.UniqueId;
+            var report = model.Run(item);
+
+            Assert.Null(report.Failure);
+            Assert.Equal(1, report.Changed);
+            Assert.Equal(0, report.Recreated);
+            Assert.Equal(originalId, item.UniqueId);
+            Assert.Contains(schema, item.EntitySchemaGuids);
+            Assert.Equal(model.Target.Id, item.LevelId);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void DirectLevelChangeTemporarilyUnpinsOpeningAndRestoresPin(bool fail)
+        {
+            var model = new Model();
+            var item = model.Create("wall");
+            item.Pinned = true;
+            var parameter = item.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM);
+            var setLevel = parameter.AfterSet;
+            bool attempted = false;
+            parameter.AfterSet = value =>
+            {
+                attempted = true;
+                Assert.False(item.Pinned);
+                setLevel(value);
+                if (fail) throw new InvalidOperationException("test rejection");
+            };
+            var report = model.Run(item);
+
+            Assert.Null(report.Failure);
+            Assert.True(attempted);
+            Assert.True(item.Pinned);
+            Assert.Equal(fail ? 0 : 1, report.Changed);
+            Assert.Equal(fail ? model.Original.Id : model.Target.Id, item.LevelId);
+            Assert.Equal(15, ((LocationPoint)item.Location).Point.Z);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void FormulaReportFieldsMustMatchAfterDirectLevelChange(bool correct)
+        {
+            var model = new Model();
+            var item = model.Create("wall");
+            item.get_Parameter(BaseHeight).IsReadOnly = true;
+            item.get_Parameter(ReportOffset).IsReadOnly = true;
+            model.Document.OnRegenerate = () =>
+            {
+                var level = (Level)model.Document.GetElement(item.LevelId);
+                if (correct)
+                {
+                    item.get_Parameter(BaseHeight).Value = level.Elevation;
+                    item.get_Parameter(ReportOffset).Value = ((LocationPoint)item.Location).Point.Z - level.ProjectElevation;
+                }
+            };
+            var report = model.Run(item);
+
+            Assert.Null(report.Failure);
+            Assert.Equal(correct ? 1 : 0, report.Changed);
+            Assert.Equal(correct ? model.Target.Id : model.Original.Id, item.LevelId);
+            Assert.Equal(correct ? 5 : 15, item.get_Parameter(ReportOffset).AsDouble());
+            Assert.Equal(correct ? 110 : 100, item.get_Parameter(BaseHeight).AsDouble());
         }
 
         [Theory]
